@@ -35,6 +35,17 @@ export default function SalesPage() {
   useEffect(() => {
     setWorkspaceId(localStorage.getItem("workspace_id"));
   }, []);
+    useEffect(() => {
+    loadSales();
+  }, []);
+
+  // 🔄 AUTO REFRESH WHEN ASSISTANT UPDATES DATA
+  useEffect(() => {
+    const onRefresh = () => loadSales();
+    window.addEventListener("adora:refresh", onRefresh);
+    return () => window.removeEventListener("adora:refresh", onRefresh);
+  }, [workspaceId]);
+
 
   async function loadProducts() {
     if (!workspaceId) return;

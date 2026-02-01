@@ -6,54 +6,71 @@ import { supabase } from "@/lib/supabaseClient";
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+
+  // ✅ added
+  const [fullName, setFullName] = useState("");
+
   const [mode, setMode] = useState<"login" | "signup">("signup");
   const [loading, setLoading] = useState(false);
 
   async function submit() {
-    const e = email.trim();
-    const p = password.trim();
-
-    if (!e) {
-      alert("Please enter your email address.");
-      return;
-    }
-    if (!p) {
-      alert("Please enter a password.");
-      return;
-    }
-    if (p.length < 6) {
-      alert("Password must be at least 6 characters.");
-      return;
-    }
-
     setLoading(true);
 
-    if (mode === "signup") {
-      const { error } = await supabase.auth.signUp({ email: e, password: p });
+    const e = email.trim();
+    const p = password;
 
-      if (error) {
-        setLoading(false);
-        alert(error.message);
-        return;
-      }
-
-      alert("Signup successful ✅ Now switch to Login and sign in.");
-    } else {
-      const { error } = await supabase.auth.signInWithPassword({
-        email: e,
-        password: p,
-      });
-
-      if (error) {
-        setLoading(false);
-        alert(error.message);
-        return;
-      }
-
-      window.location.href = "/setup";
+    if (!e || !p) {
+      setLoading(false);
+      alert("Please enter email and password.");
+      return;
     }
 
-    setLoading(false);
+    try {
+      if (mode === "signup") {
+        const name = fullName.trim();
+        if (!name) {
+          setLoading(false);
+          alert("Please enter your full name.");
+          return;
+        }
+
+        const { error } = await supabase.auth.signUp({
+          email: e,
+          password: p,
+          options: {
+            data: {
+              name, // ✅ stored in user_metadata
+            },
+          },
+        });
+
+        if (error) {
+          setLoading(false);
+          alert(error.message);
+          return;
+        }
+
+        alert("Signup successful ✅ Now switch to Login and sign in.");
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({
+          email: e,
+          password: p,
+        });
+
+        if (error) {
+          setLoading(false);
+          alert(error.message);
+          return;
+        }
+
+        alert("Logged in ✅");
+        window.location.href = "/setup";
+      }
+    } catch (err: any) {
+      alert(err?.message || "Something went wrong");
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -61,11 +78,19 @@ export default function LoginPage() {
       <h1>{mode === "signup" ? "Create account" : "Log in"}</h1>
 
       <div style={{ display: "grid", gap: 10 }}>
+        {/* ✅ Full name only on signup */}
+        {mode === "signup" && (
+          <input
+            placeholder="Full name"
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+          />
+        )}
+
         <input
           placeholder="Email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          style={{ padding: 10 }}
         />
 
         <input
@@ -73,17 +98,15 @@ export default function LoginPage() {
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          style={{ padding: 10 }}
         />
 
-        <button onClick={submit} disabled={loading} style={{ padding: 10 }}>
+        <button onClick={submit} disabled={loading}>
           {loading ? "Working..." : mode === "signup" ? "Sign up" : "Log in"}
         </button>
 
         <button
           onClick={() => setMode(mode === "signup" ? "login" : "signup")}
           disabled={loading}
-          style={{ padding: 10, background: "transparent", border: "none", color: "blue" }}
         >
           Switch to {mode === "signup" ? "Login" : "Signup"}
         </button>
@@ -91,4 +114,5 @@ export default function LoginPage() {
     </div>
   );
 }
+
 

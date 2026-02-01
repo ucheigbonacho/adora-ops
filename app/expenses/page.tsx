@@ -42,6 +42,12 @@ export default function ExpensesPage() {
 
     setExpenses((data as Expense[]) || []);
   }
+// 🔄 AUTO REFRESH WHEN ASSISTANT UPDATES DATA
+useEffect(() => {
+  const onRefresh = () => loadExpenses();
+  window.addEventListener("adora:refresh", onRefresh);
+  return () => window.removeEventListener("adora:refresh", onRefresh);
+}, [workspaceId]);
 
   async function addExpense() {
     if (!workspaceId) return;

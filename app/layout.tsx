@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
 import TopNav from "@/components/TopNav";
+import AssistantWidgetClientOnly from "@/components/AssistantWidgetClientOnly";
+
+
 
 export const metadata: Metadata = {
   title: "Adora Ops",
@@ -20,6 +23,8 @@ export default function RootLayout({
         {/* Page content */}
         <div style={{ padding: 16 }}>
           {children}
+          <AssistantWidgetClientOnly />
+
         </div>
       </body>
     </html>

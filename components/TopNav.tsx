@@ -23,6 +23,7 @@ export default function TopNav() {
     { href: "/inventory", label: "Inventory" },
     { href: "/sales", label: "Sales" },
     { href: "/expenses", label: "Expenses" },
+    { href: "/assistant", label: "Assistant" }, 
     { href: "/import-inventory", label: "Import Inventory" },
 
   ];

@@ -36,6 +36,12 @@ export default function InventoryPage() {
 
     setItems((data as InventoryRow[]) || []);
   }
+// 🔄 AUTO REFRESH WHEN ASSISTANT UPDATES DATA
+useEffect(() => {
+  const onRefresh = () => loadInventory();
+  window.addEventListener("adora:refresh", onRefresh);
+  return () => window.removeEventListener("adora:refresh", onRefresh);
+}, [workspaceId]);
 
   async function changeStock(productId: string, delta: number) {
     if (!workspaceId) return;
