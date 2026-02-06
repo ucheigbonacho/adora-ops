@@ -1,69 +1,190 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
 export default function TopNav() {
-  const pathname = usePathname();
+  const [open, setOpen] = useState(false);
+  const [email, setEmail] = useState<string | null>(null);
 
-  // Hide nav on auth/setup pages
-  if (pathname === "/login" || pathname === "/setup") return null;
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      setEmail(data.user?.email ?? null);
+    });
+  }, []);
 
   async function logout() {
     await supabase.auth.signOut();
-    localStorage.removeItem("workspace_id");
     window.location.href = "/login";
   }
 
-  const links = [
-    { href: "/dashboard", label: "Dashboard" },
-    { href: "/import", label: "Import" },
-    { href: "/products", label: "Products" },
-    { href: "/inventory", label: "Inventory" },
-    { href: "/sales", label: "Sales" },
-    { href: "/expenses", label: "Expenses" },
-    { href: "/assistant", label: "Assistant" }, 
-    { href: "/import-inventory", label: "Import Inventory" },
+  const links = (
+    <>
+      <NavLink href="/dashboard" label="Dashboard" />
+      <NavLink href="/products" label="Products" />
+      <NavLink href="/inventory" label="Inventory" />
+      <NavLink href="/sales" label="Sales" />
+      <NavLink href="/expenses" label="Expenses" />
 
-  ];
+      {/* ✅ NEW IMPORT LINK */}
+      <NavLink href="/import" label="Import" />
+
+      <NavLink href="/pricing" label="Pricing" highlight />
+      <NavLink href="/billing" label="Billing" />
+    </>
+  );
 
   return (
-    <div
-      style={{
-        borderBottom: "1px solid #eee",
-        padding: "12px 16px",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 12,
-      }}
-    >
-      <div style={{ fontWeight: 800 }}>Adora Ops</div>
+    <header style={header()}>
+      {/* Left: Logo + Name */}
+      <Link href="/" style={brand()}>
+        <img
+          src="/adora-logo.png"
+          alt="Adora Logo"
+          style={{ height: 34, width: "auto" }}
+        />
+        <span style={{ fontWeight: 900, fontSize: 18 }}>Adora Ops</span>
+      </Link>
 
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-        {links.map((l) => {
-          const active = pathname === l.href;
-          return (
-            <Link
-              key={l.href}
-              href={l.href}
-              style={{
-                textDecoration: "none",
-                padding: "6px 10px",
-                borderRadius: 8,
-                border: active ? "1px solid #111" : "1px solid transparent",
-              }}
-            >
-              {l.label}
-            </Link>
-          );
-        })}
+      {/* Desktop Nav */}
+      <nav data-desktop-nav="1" style={desktopNav()}>
+        {links}
+      </nav>
+
+      {/* Right side */}
+      <div style={right()}>
+        {email && <span style={emailStyle()}>{email}</span>}
+
+        <button onClick={logout} style={logoutBtn()}>
+          Logout
+        </button>
+
+        {/* Mobile Burger */}
+        <button
+          data-burger="1"
+          onClick={() => setOpen(!open)}
+          style={burger()}
+          aria-label="Menu"
+        >
+          ☰
+        </button>
       </div>
 
-      <button onClick={logout} style={{ padding: "6px 10px" }}>
-        Logout
-      </button>
-    </div>
+      {/* Mobile Dropdown */}
+      {open && <div style={mobileMenu()}>{links}</div>}
+    </header>
   );
 }
+
+function NavLink({
+  href,
+  label,
+  highlight,
+}: {
+  href: string;
+  label: string;
+  highlight?: boolean;
+}) {
+  return (
+    <Link
+      href={href}
+      style={{
+        padding: "8px 12px",
+        borderRadius: 10,
+        fontWeight: 700,
+        textDecoration: "none",
+        color: highlight ? "#1F6FEB" : "#0B1220",
+        background: highlight ? "#E9F2FF" : "transparent",
+      }}
+    >
+      {label}
+    </Link>
+  );
+}
+
+/* ---------------- STYLES ---------------- */
+
+function header(): React.CSSProperties {
+  return {
+    position: "sticky",
+    top: 0,
+    zIndex: 1000,
+    background: "#fff",
+    borderBottom: "1px solid #E6E8EE",
+    padding: "10px 16px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    flexWrap: "wrap",
+  };
+}
+
+function brand(): React.CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    textDecoration: "none",
+    color: "#0B1220",
+  };
+}
+
+function desktopNav(): React.CSSProperties {
+  return {
+    display: "flex",
+    gap: 8,
+    alignItems: "center",
+  };
+}
+
+function right(): React.CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+  };
+}
+
+function emailStyle(): React.CSSProperties {
+  return {
+    fontSize: 12,
+    color: "#5B6475",
+    display: "none",
+  };
+}
+
+function logoutBtn(): React.CSSProperties {
+  return {
+    padding: "6px 10px",
+    borderRadius: 10,
+    border: "1px solid #E6E8EE",
+    background: "#fff",
+    fontWeight: 700,
+    cursor: "pointer",
+  };
+}
+
+function burger(): React.CSSProperties {
+  return {
+    display: "none",
+    padding: "6px 10px",
+    borderRadius: 10,
+    border: "1px solid #E6E8EE",
+    background: "#fff",
+    fontWeight: 900,
+    cursor: "pointer",
+    fontSize: 18,
+  };
+}
+
+function mobileMenu(): React.CSSProperties {
+  return {
+    width: "100%",
+    marginTop: 10,
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+  };
+}
+

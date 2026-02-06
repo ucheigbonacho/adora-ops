@@ -16,10 +16,6 @@ declare global {
   }
 }
 
-function safeStr(v: any) {
-  return String(v ?? "").trim();
-}
-
 export default function AssistantWidget() {
   const [open, setOpen] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -28,12 +24,14 @@ export default function AssistantWidget() {
     {
       role: "assistant",
       text:
-        "Hi! Tell me what happened today. Examples:\n" +
+        "Hi! Tell me what happened today.\n\n" +
+        "Examples:\n" +
         "• I sold 2 rice for 4 dollars each\n" +
         "• I paid gas bill 15 dollars\n" +
         "• I bought 3 bags of beans\n\n" +
         "You can also ask:\n" +
         "• did i make profit today?\n" +
+        "• did i make profit this month?\n" +
         "• top selling products today\n" +
         "• paid vs unpaid revenue",
     },
@@ -75,19 +73,6 @@ export default function AssistantWidget() {
     return String(msg);
   }
 
-  // Optional TTS
-  function speak(text: string) {
-    if (typeof window === "undefined") return;
-    if (!("speechSynthesis" in window)) return;
-    const clean = safeStr(text);
-    if (!clean) return;
-
-    const u = new SpeechSynthesisUtterance(clean);
-    u.lang = "en-US";
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(u);
-  }
-
   // Load workspace + user name
   useEffect(() => {
     const wid =
@@ -109,7 +94,6 @@ export default function AssistantWidget() {
         setUserName("");
       }
     }
-
     loadName();
   }, []);
 
@@ -117,6 +101,7 @@ export default function AssistantWidget() {
     scrollToBottom();
   }, [messages, open]);
 
+  // Cleanup
   useEffect(() => {
     return () => {
       try {
@@ -127,7 +112,7 @@ export default function AssistantWidget() {
   }, []);
 
   async function sendToApi(textToSend: string) {
-    const text = safeStr(textToSend);
+    const text = String(textToSend || "").trim();
     if (!text) throw new Error("No message provided.");
 
     const res = await fetch("/api/chat", {
@@ -148,33 +133,8 @@ export default function AssistantWidget() {
     return json as { ok: true; reply?: string; results?: string[]; analytics?: any };
   }
 
-  async function sendSpokenText(spoken: string) {
-    const text = safeStr(spoken);
-    if (!text) return;
-
-    setInput("");
-    transcriptRef.current = "";
-    setLoading(true);
-    setMessages((m) => [...m, { role: "user", text }]);
-
-    try {
-      const data = await sendToApi(text);
-      const replyText = safeStr(data?.reply || "Done ✅") || "Done ✅";
-      setMessages((m) => [...m, { role: "assistant", text: replyText }]);
-      window.dispatchEvent(new Event("adora:refresh"));
-      // speak(replyText);
-    } catch (e: any) {
-      setMessages((m) => [
-        ...m,
-        { role: "assistant", text: `I ran into an error: ${safeErrMsg(e)}` },
-      ]);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function sendMessage(textOverride?: string) {
-    const text = safeStr(textOverride ?? input);
+  async function sendMessage() {
+    const text = input.trim();
     if (!text) return;
 
     if (!workspaceId) {
@@ -192,10 +152,9 @@ export default function AssistantWidget() {
 
     try {
       const data = await sendToApi(text);
-      const replyText = safeStr(data?.reply || "Done ✅") || "Done ✅";
+      const replyText = String(data?.reply || "Done ✅").trim();
       setMessages((m) => [...m, { role: "assistant", text: replyText }]);
       window.dispatchEvent(new Event("adora:refresh"));
-      // speak(replyText);
     } catch (e: any) {
       setMessages((m) => [
         ...m,
@@ -213,12 +172,14 @@ export default function AssistantWidget() {
         role: "assistant",
         text:
           greet +
-          "Tell me what happened today. Examples:\n" +
+          "Tell me what happened today.\n\n" +
+          "Examples:\n" +
           "• I sold 2 rice for 4 dollars each\n" +
           "• I paid gas bill 15 dollars\n" +
           "• I bought 3 bags of beans\n\n" +
           "You can also ask:\n" +
           "• did i make profit today?\n" +
+          "• did i make profit this month?\n" +
           "• top selling products today\n" +
           "• paid vs unpaid revenue",
       },
@@ -227,7 +188,9 @@ export default function AssistantWidget() {
     transcriptRef.current = "";
   }
 
-  // Voice
+  // =========================================================
+  // VOICE
+  // =========================================================
   function stopListening() {
     if (!recRef.current) return;
     try {
@@ -235,7 +198,31 @@ export default function AssistantWidget() {
     } catch {}
   }
 
-  function startListening() {
+  async function sendSpokenText(spoken: string) {
+    const text = String(spoken || "").trim();
+    if (!text) return;
+
+    setInput("");
+    transcriptRef.current = "";
+    setLoading(true);
+    setMessages((m) => [...m, { role: "user", text }]);
+
+    try {
+      const data = await sendToApi(text);
+      const replyText = String(data?.reply || "Done ✅").trim();
+      setMessages((m) => [...m, { role: "assistant", text: replyText }]);
+      window.dispatchEvent(new Event("adora:refresh"));
+    } catch (e: any) {
+      setMessages((m) => [
+        ...m,
+        { role: "assistant", text: `I ran into an error: ${safeErrMsg(e)}` },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function startListeningHandsFree() {
     const SpeechRecognition =
       window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -253,7 +240,6 @@ export default function AssistantWidget() {
     }
 
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-
     transcriptRef.current = "";
     setListening(true);
 
@@ -269,9 +255,13 @@ export default function AssistantWidget() {
     let interimText = "";
 
     const resetSilenceTimer = () => {
+      // if user is holding SPACE, do NOT auto-stop on silence
       if (isSpaceDownRef.current) return;
+
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-      silenceTimerRef.current = setTimeout(() => stopListening(), 1300);
+      silenceTimerRef.current = setTimeout(() => {
+        stopListening();
+      }, 1300);
     };
 
     rec.onstart = () => resetSilenceTimer();
@@ -302,7 +292,7 @@ export default function AssistantWidget() {
       setListening(false);
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
 
-      const spoken = safeStr(transcriptRef.current) || safeStr(finalText);
+      const spoken = (transcriptRef.current || "").trim() || finalText.trim();
       if (!spoken) return;
 
       await sendSpokenText(spoken);
@@ -321,52 +311,58 @@ export default function AssistantWidget() {
 
   function toggleVoice() {
     if (!canUseVoice) {
-      alert("Voice works best in Chrome.");
+      alert("Voice input not supported on this browser. Use Chrome.");
       return;
     }
     if (loading) return;
 
     if (listening) stopListening();
-    else startListening();
+    else startListeningHandsFree();
   }
 
   // SPACEBAR push-to-talk
   useEffect(() => {
-    function isTypingInInput() {
-      const el = document.activeElement as HTMLElement | null;
-      if (!el) return false;
-      return (
-        el.tagName === "INPUT" ||
-        el.tagName === "TEXTAREA" ||
-        (el as any).isContentEditable
-      );
-    }
-
     function onKeyDown(e: KeyboardEvent) {
-      if (isTypingInInput()) return;
+      const el = document.activeElement as HTMLElement | null;
+      const isTyping =
+        el &&
+        (el.tagName === "INPUT" ||
+          el.tagName === "TEXTAREA" ||
+          (el as any).isContentEditable);
+
+      if (isTyping) return;
 
       if (e.code === "Space") {
         e.preventDefault();
+
         if (loading) return;
         if (!canUseVoice) return;
-        if (isSpaceDownRef.current) return;
 
+        if (isSpaceDownRef.current) return;
         isSpaceDownRef.current = true;
 
         if (!listening) {
           transcriptRef.current = "";
           setInput("");
-          startListening();
+          startListeningHandsFree();
         }
       }
     }
 
     function onKeyUp(e: KeyboardEvent) {
-      if (isTypingInInput()) return;
+      const el = document.activeElement as HTMLElement | null;
+      const isTyping =
+        el &&
+        (el.tagName === "INPUT" ||
+          el.tagName === "TEXTAREA" ||
+          (el as any).isContentEditable);
+
+      if (isTyping) return;
 
       if (e.code === "Space") {
         e.preventDefault();
         isSpaceDownRef.current = false;
+
         if (listening) stopListening();
       }
     }
@@ -380,6 +376,7 @@ export default function AssistantWidget() {
     };
   }, [listening, loading, canUseVoice]);
 
+  // UI
   if (!open) {
     return (
       <button
@@ -391,14 +388,15 @@ export default function AssistantWidget() {
           zIndex: 9999,
           padding: "12px 14px",
           borderRadius: 999,
-          border: "1px solid #ddd",
-          background: "#111",
+          border: "1px solid #E6E8EE",
+          background: "#0B1220",
           color: "#fff",
           cursor: "pointer",
+          fontWeight: 900,
         }}
-        title="Open Assistant"
+        title="Open Adora"
       >
-        Assistant
+        Adora
       </button>
     );
   }
@@ -409,13 +407,13 @@ export default function AssistantWidget() {
         position: "fixed",
         right: 18,
         bottom: 18,
-        width: 380,
-        height: 600,
+        width: 360,
+        height: 520,
         zIndex: 9999,
-        border: "1px solid #e6e6e6",
-        borderRadius: 16,
+        border: "1px solid #E6E8EE",
+        borderRadius: 18,
         background: "#fff",
-        boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
+        boxShadow: "0 12px 28px rgba(0,0,0,0.12)",
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
@@ -425,32 +423,16 @@ export default function AssistantWidget() {
       <div
         style={{
           padding: "10px 12px",
-          borderBottom: "1px solid #eee",
+          borderBottom: "1px solid #F0F2F6",
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
           gap: 8,
+          background: "#F7F9FC",
         }}
       >
-        <div style={{ fontWeight: 900, display: "flex", gap: 8, alignItems: "center" }}>
-          {/* Placeholder logo bubble */}
-          <div
-            style={{
-              width: 28,
-              height: 28,
-              borderRadius: 8,
-              background: "#111",
-              color: "#fff",
-              display: "grid",
-              placeItems: "center",
-              fontSize: 12,
-              fontWeight: 900,
-            }}
-            title="Adora Ops"
-          >
-            AO
-          </div>
-          <div>Assistant{userName ? ` • ${userName}` : ""}</div>
+        <div style={{ fontWeight: 950 }}>
+          Adora{userName ? ` • ${userName}` : ""}
         </div>
 
         <div style={{ display: "flex", gap: 8 }}>
@@ -458,10 +440,11 @@ export default function AssistantWidget() {
             onClick={clearChat}
             style={{
               padding: "6px 10px",
-              borderRadius: 10,
-              border: "1px solid #ddd",
-              background: "#fafafa",
+              borderRadius: 12,
+              border: "1px solid #E6E8EE",
+              background: "#fff",
               cursor: "pointer",
+              fontWeight: 800,
             }}
           >
             Clear
@@ -470,120 +453,15 @@ export default function AssistantWidget() {
             onClick={() => setOpen(false)}
             style={{
               padding: "6px 10px",
-              borderRadius: 10,
-              border: "1px solid #ddd",
-              background: "#fafafa",
+              borderRadius: 12,
+              border: "1px solid #E6E8EE",
+              background: "#fff",
               cursor: "pointer",
+              fontWeight: 800,
             }}
           >
             Close
           </button>
-        </div>
-      </div>
-
-      {/* ✅ PERMANENT BIG MIC PANEL */}
-      <div
-        style={{
-          padding: 12,
-          borderBottom: "1px solid #f3f3f3",
-          background: "linear-gradient(180deg,#ffffff,#f8fafc)",
-        }}
-      >
-        <div
-          style={{
-            border: "1px dashed #e5e7eb",
-            borderRadius: 16,
-            padding: 14,
-            boxShadow: "0 10px 20px rgba(0,0,0,0.06)",
-          }}
-        >
-          <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
-            <button
-              onClick={toggleVoice}
-              disabled={loading || !canUseVoice}
-              style={{
-                width: 84,
-                height: 84,
-                borderRadius: 20,
-                border: "1px solid #111",
-                background: listening ? "#111" : "#fff",
-                color: listening ? "#fff" : "#111",
-                cursor: loading ? "not-allowed" : "pointer",
-                fontSize: 34,
-                display: "grid",
-                placeItems: "center",
-                boxShadow: "0 14px 30px rgba(0,0,0,0.15)",
-                opacity: !canUseVoice ? 0.6 : 1,
-              }}
-              title={
-                !canUseVoice
-                  ? "Voice works best in Chrome"
-                  : listening
-                  ? "Stop listening"
-                  : "Tap to speak"
-              }
-            >
-              {listening ? "🎤" : "🎙️"}
-            </button>
-
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 900, fontSize: 15 }}>
-                Speak your business update
-              </div>
-              <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
-                {canUseVoice
-                  ? "Tap the mic to talk hands-free, or hold SPACE to push-to-talk."
-                  : "Voice works best in Chrome. You can still type below."}
-              </div>
-
-              <div
-                style={{
-                  marginTop: 10,
-                  display: "flex",
-                  gap: 8,
-                  flexWrap: "wrap",
-                }}
-              >
-                {[
-                  "I sold 2 rice for 4 dollars each",
-                  "I paid gas bill 15 dollars",
-                  "I bought 3 bags of beans",
-                ].map((t) => (
-                  <button
-                    key={t}
-                    onClick={() => sendMessage(t)}
-                    disabled={loading}
-                    style={{
-                      padding: "6px 10px",
-                      borderRadius: 999,
-                      border: "1px solid #e5e7eb",
-                      background: "#fff",
-                      cursor: loading ? "not-allowed" : "pointer",
-                      fontSize: 12,
-                    }}
-                  >
-                    {t}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
-            {canUseVoice ? (
-              listening ? (
-                isSpaceDownRef.current ? (
-                  "Push-to-talk: release SPACE to send."
-                ) : (
-                  "Hands-free: pause to auto-send."
-                )
-              ) : (
-                "Tip: Hold SPACE to talk (release to send)."
-              )
-            ) : (
-              "Voice works best in Chrome."
-            )}
-          </div>
         </div>
       </div>
 
@@ -614,10 +492,10 @@ export default function AssistantWidget() {
                   whiteSpace: "pre-wrap",
                   lineHeight: 1.25,
                   padding: "10px 12px",
-                  borderRadius: 14,
-                  background: isUser ? "#111" : "#f4f4f4",
-                  color: isUser ? "#fff" : "#111",
-                  border: "1px solid " + (isUser ? "#111" : "#eee"),
+                  borderRadius: 16,
+                  background: isUser ? "#0B1220" : "#F4F6FA",
+                  color: isUser ? "#fff" : "#0B1220",
+                  border: "1px solid " + (isUser ? "#0B1220" : "#E6E8EE"),
                 }}
               >
                 {m.text}
@@ -631,13 +509,43 @@ export default function AssistantWidget() {
       <div
         style={{
           padding: 10,
-          borderTop: "1px solid #eee",
+          borderTop: "1px solid #F0F2F6",
           display: "flex",
-          gap: 8,
+          gap: 10,
           alignItems: "center",
           background: "#fff",
         }}
       >
+        {/* ✅ BIG MIC (permanent) */}
+        <button
+          onClick={toggleVoice}
+          disabled={!canUseVoice || loading}
+          title={
+            !canUseVoice
+              ? "Voice not supported in this browser"
+              : listening
+              ? "Stop listening"
+              : "Start voice"
+          }
+          style={{
+            width: 56,
+            height: 56,
+            borderRadius: 999,
+            border: "1px solid #E6E8EE",
+            background: listening ? "#111827" : "#1F6FEB",
+            color: "#fff",
+            cursor: !canUseVoice || loading ? "not-allowed" : "pointer",
+            display: "grid",
+            placeItems: "center",
+            fontSize: 24,
+            boxShadow: listening
+              ? "0 0 0 6px rgba(31,111,235,0.18)"
+              : "0 10px 20px rgba(0,0,0,0.10)",
+          }}
+        >
+          🎤
+        </button>
+
         <input
           value={input}
           onChange={(e) => {
@@ -654,30 +562,57 @@ export default function AssistantWidget() {
           }}
           style={{
             flex: 1,
-            padding: "10px 12px",
-            borderRadius: 12,
-            border: "1px solid #ddd",
+            padding: "12px 12px",
+            borderRadius: 14,
+            border: "1px solid #E6E8EE",
             outline: "none",
           }}
         />
 
         <button
-          onClick={() => sendMessage()}
+          onClick={sendMessage}
           disabled={loading}
           style={{
-            padding: "10px 14px",
-            borderRadius: 12,
-            border: "1px solid #111",
-            background: "#111",
+            padding: "12px 14px",
+            borderRadius: 14,
+            border: "1px solid #0B1220",
+            background: "#0B1220",
             color: "#fff",
             cursor: loading ? "not-allowed" : "pointer",
+            fontWeight: 900,
           }}
         >
           {loading ? "..." : "Send"}
         </button>
       </div>
+
+      {/* Footer hint */}
+      <div
+        style={{
+          padding: "6px 10px",
+          fontSize: 12,
+          color: "#5B6475",
+          borderTop: "1px solid #F3F5F9",
+          background: "#FCFCFD",
+        }}
+      >
+        {canUseVoice ? (
+          listening ? (
+            isSpaceDownRef.current ? (
+              "Push-to-talk: release SPACE to send."
+            ) : (
+              "Hands-free: pause to auto-send."
+            )
+          ) : (
+            "Tip: Click 🎤 or hold SPACE to talk (release to send)."
+          )
+        ) : (
+          "Voice works best in Chrome."
+        )}
+      </div>
     </div>
   );
 }
+
 
 

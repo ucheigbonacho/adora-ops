@@ -29,6 +29,15 @@ type ExpenseRow = {
   created_at: string;
 };
 
+type Period = "today" | "this_month";
+
+const BRAND = "#1F6FEB";
+const BORDER = "#E6E8EE";
+const TEXT = "#0B1220";
+const MUTED = "#5B6475";
+const SOFT = "#F7F9FC";
+const RED = "#D92D20";
+
 export default function DashboardPage() {
   const [workspaceId, setWorkspaceId] = useState<string>("");
 
@@ -37,6 +46,7 @@ export default function DashboardPage() {
   const [expenses, setExpenses] = useState<ExpenseRow[]>([]);
 
   const [analytics, setAnalytics] = useState<any>(null);
+  const [period, setPeriod] = useState<Period>("today"); // ✅ daily default
 
   useEffect(() => {
     const ws = localStorage.getItem("workspace_id") || "";
@@ -51,10 +61,7 @@ export default function DashboardPage() {
       .eq("workspace_id", workspaceId)
       .order("name", { ascending: true });
 
-    if (error) {
-      alert("Failed to load products: " + error.message);
-      return;
-    }
+    if (error) return alert("Failed to load products: " + error.message);
     setProducts((data as any) || []);
   }
 
@@ -67,10 +74,7 @@ export default function DashboardPage() {
       .order("created_at", { ascending: false })
       .limit(50);
 
-    if (error) {
-      alert("Failed to load sales: " + error.message);
-      return;
-    }
+    if (error) return alert("Failed to load sales: " + error.message);
     setSales((data as any) || []);
   }
 
@@ -83,48 +87,51 @@ export default function DashboardPage() {
       .order("created_at", { ascending: false })
       .limit(50);
 
-    if (error) {
-      alert("Failed to load expenses: " + error.message);
-      return;
-    }
+    if (error) return alert("Failed to load expenses: " + error.message);
     setExpenses((data as any) || []);
   }
 
-  async function loadAnalytics() {
+  async function loadAnalytics(p: Period) {
     if (!workspaceId) return;
 
     const res = await fetch("/api/analytics", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        workspace_id: workspaceId,
-        period: "today",
-      }),
+      body: JSON.stringify({ workspace_id: workspaceId, period: p }),
     });
 
-    const json = await res.json();
-    if (json.ok) setAnalytics(json.data);
+    const json = await res.json().catch(() => ({}));
+    if (json?.ok) setAnalytics(json.data);
   }
 
-  async function loadDashboard() {
-    await Promise.all([loadProducts(), loadSales(), loadExpenses(), loadAnalytics()]);
+  async function loadDashboard(p: Period) {
+    await Promise.all([loadProducts(), loadSales(), loadExpenses(), loadAnalytics(p)]);
   }
 
   useEffect(() => {
     if (!workspaceId) return;
-    loadDashboard();
+    loadDashboard(period);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId]);
 
+  // re-load analytics when period changes
+  useEffect(() => {
+    if (!workspaceId) return;
+    loadAnalytics(period);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [period, workspaceId]);
+
   // AUTO REFRESH WHEN ASSISTANT UPDATES DATA
   useEffect(() => {
-    const onRefresh = () => {
-      loadDashboard();
-    };
+    const onRefresh = () => loadDashboard(period);
     window.addEventListener("adora:refresh", onRefresh);
     return () => window.removeEventListener("adora:refresh", onRefresh);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId]);
+  }, [workspaceId, period]);
+
+  const productNameById = useMemo(() => {
+    return Object.fromEntries(products.map((p) => [p.id, p.name]));
+  }, [products]);
 
   const lowStock = useMemo(() => {
     return products
@@ -142,83 +149,105 @@ export default function DashboardPage() {
     return x.toFixed(2);
   }
 
+  const periodLabel = period === "today" ? "Today" : "This Month";
+
+  const cardStyle: React.CSSProperties = {
+    border: `1px solid ${BORDER}`,
+    borderRadius: 18,
+    padding: 16,
+    background: "#fff",
+    boxShadow: "0 12px 28px rgba(0,0,0,0.06)",
+  };
+
   return (
     <AuthGate>
-      <div style={{ padding: 16 }}>
-        <h1 style={{ fontSize: 42, marginBottom: 18 }}>Dashboard</h1>
+      <div style={{ maxWidth: 1100, margin: "0 auto", padding: 16 }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 12,
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            marginBottom: 14,
+          }}
+        >
+          <h1 style={{ fontSize: 34, margin: 0, color: TEXT }}>Dashboard</h1>
+
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <div style={{ fontSize: 12, color: MUTED, fontWeight: 800 }}>
+              Summary period
+            </div>
+            <select
+              value={period}
+              onChange={(e) => setPeriod(e.target.value as Period)}
+              style={{
+                padding: "10px 12px",
+                borderRadius: 14,
+                border: `1px solid ${BORDER}`,
+                background: SOFT,
+                fontWeight: 800,
+                color: TEXT,
+                outline: "none",
+              }}
+            >
+              <option value="today">Today</option>
+              <option value="this_month">This Month</option>
+            </select>
+          </div>
+        </div>
 
         {/* Analytics Cards */}
         {analytics && (
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-              gap: 16,
-              marginBottom: 24,
+              gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+              gap: 14,
+              marginBottom: 18,
             }}
           >
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: 16,
-                padding: 16,
-              }}
-            >
-              <h3 style={{ margin: 0, marginBottom: 8 }}>Today's Revenue</h3>
-              <div style={{ fontSize: 28, fontWeight: 800 }}>
+            <div style={cardStyle}>
+              <div style={{ color: MUTED, fontWeight: 900, fontSize: 12 }}>
+                {periodLabel} Revenue
+              </div>
+              <div style={{ fontSize: 28, fontWeight: 950, marginTop: 6 }}>
                 ${fmt(analytics.revenueTotal)}
               </div>
-              <div style={{ marginTop: 6, opacity: 0.85 }}>
-                Paid: ${fmt(analytics.revenuePaid)} | Unpaid: $
-                {fmt(analytics.revenueUnpaid)}
+              <div style={{ marginTop: 8, color: MUTED, fontWeight: 800 }}>
+                Paid: ${fmt(analytics.revenuePaid)} • Unpaid: ${fmt(analytics.revenueUnpaid)}
               </div>
             </div>
 
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: 16,
-                padding: 16,
-              }}
-            >
-              <h3 style={{ margin: 0, marginBottom: 8 }}>Today's Expenses</h3>
-              <div style={{ fontSize: 28, fontWeight: 800 }}>
+            <div style={cardStyle}>
+              <div style={{ color: MUTED, fontWeight: 900, fontSize: 12 }}>
+                {periodLabel} Expenses
+              </div>
+              <div style={{ fontSize: 28, fontWeight: 950, marginTop: 6 }}>
                 ${fmt(analytics.expensesTotal)}
               </div>
-              <div style={{ marginTop: 6, opacity: 0.85 }}>
+              <div style={{ marginTop: 8, color: MUTED, fontWeight: 800 }}>
                 Inventory purchases: ${fmt(analytics.inventoryPurchases)}
               </div>
             </div>
 
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: 16,
-                padding: 16,
-              }}
-            >
-              <h3 style={{ margin: 0, marginBottom: 8 }}>
+            <div style={cardStyle}>
+              <div style={{ color: MUTED, fontWeight: 900, fontSize: 12 }}>
                 Profit (after inventory purchases)
-              </h3>
-              <div style={{ fontSize: 28, fontWeight: 800 }}>
+              </div>
+              <div style={{ fontSize: 28, fontWeight: 950, marginTop: 6 }}>
                 ${fmt(analytics.profitAfterInventoryPurchases)}
               </div>
             </div>
 
-            <div
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: 16,
-                padding: 16,
-              }}
-            >
-              <h3 style={{ margin: 0, marginBottom: 8 }}>
+            <div style={cardStyle}>
+              <div style={{ color: MUTED, fontWeight: 900, fontSize: 12 }}>
                 Profit (operational only)
-              </h3>
-              <div style={{ fontSize: 28, fontWeight: 800 }}>
+              </div>
+              <div style={{ fontSize: 28, fontWeight: 950, marginTop: 6 }}>
                 ${fmt(analytics.profitWithoutInventoryPurchases)}
               </div>
-              <div style={{ marginTop: 6, opacity: 0.85 }}>
+              <div style={{ marginTop: 8, color: MUTED, fontWeight: 800 }}>
                 Excludes inventory purchases
               </div>
             </div>
@@ -227,80 +256,139 @@ export default function DashboardPage() {
 
         {/* Top Products */}
         {analytics?.topProducts?.length > 0 && (
-          <div
-            style={{
-              border: "1px solid #ddd",
-              borderRadius: 16,
-              padding: 16,
-              marginBottom: 24,
-            }}
-          >
-            <h3 style={{ margin: 0, marginBottom: 12 }}>
-              Top Selling Products Today
-            </h3>
-            <ul style={{ margin: 0, paddingLeft: 18 }}>
+          <div style={{ ...cardStyle, marginBottom: 14 }}>
+            <div style={{ fontWeight: 950, marginBottom: 10, color: TEXT }}>
+              Top Selling Products ({periodLabel})
+            </div>
+            <div style={{ display: "grid", gap: 8 }}>
               {analytics.topProducts.map((p: any) => (
-                <li key={p.product_id} style={{ marginBottom: 6 }}>
-                  <b>{p.name}</b> — {p.qtySold} sold (${fmt(p.revenue)})
-                </li>
+                <div
+                  key={p.product_id}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 10,
+                    padding: "10px 12px",
+                    borderRadius: 14,
+                    border: `1px solid ${BORDER}`,
+                    background: SOFT,
+                  }}
+                >
+                  <div style={{ fontWeight: 900, color: TEXT }}>{p.name}</div>
+                  <div style={{ color: MUTED, fontWeight: 800 }}>
+                    {p.qtySold} sold • ${fmt(p.revenue)}
+                  </div>
+                </div>
               ))}
-            </ul>
+            </div>
           </div>
         )}
 
         {/* Low Stock */}
-        <div
-          style={{
-            border: "1px solid #ddd",
-            borderRadius: 16,
-            padding: 16,
-            marginBottom: 24,
-          }}
-        >
-          <h3 style={{ margin: 0, marginBottom: 12 }}>Low Stock Alerts</h3>
+        <div style={{ ...cardStyle, marginBottom: 14 }}>
+          <div style={{ fontWeight: 950, marginBottom: 10, color: TEXT }}>
+            Low Stock Alerts
+          </div>
+
           {lowStock.length === 0 ? (
-            <div>✅ No low stock items</div>
+            <div style={{ color: MUTED, fontWeight: 800 }}>✅ No low stock items</div>
           ) : (
-            <ul style={{ margin: 0, paddingLeft: 18 }}>
+            <div style={{ display: "grid", gap: 8 }}>
               {lowStock.map((p: any) => (
-                <li key={p.id}>
-                  {p.name} — stock: {p.onHand} (reorder: {p.reorder})
-                </li>
+                <div
+                  key={p.id}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 10,
+                    padding: "10px 12px",
+                    borderRadius: 14,
+                    border: `1px solid ${BORDER}`,
+                    background: "#fff",
+                  }}
+                >
+                  <div style={{ fontWeight: 900, color: TEXT }}>{p.name}</div>
+                  <div style={{ fontWeight: 950, color: RED }}>
+                    stock: {p.onHand} (reorder: {p.reorder})
+                  </div>
+                </div>
               ))}
-            </ul>
+            </div>
           )}
         </div>
 
         {/* Recent Sales + Expenses */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-          <div style={{ border: "1px solid #ddd", borderRadius: 16, padding: 16 }}>
-            <h3 style={{ margin: 0, marginBottom: 12 }}>Recent Sales</h3>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+            gap: 14,
+          }}
+        >
+          <div style={cardStyle}>
+            <div style={{ fontWeight: 950, marginBottom: 10, color: TEXT }}>
+              Recent Sales
+            </div>
             {sales.length === 0 ? (
-              <div>No sales yet</div>
+              <div style={{ color: MUTED, fontWeight: 800 }}>No sales yet</div>
             ) : (
-              <ul style={{ margin: 0, paddingLeft: 18 }}>
-                {sales.slice(0, 10).map((s) => (
-                  <li key={s.id}>
-                    product_id: {s.product_id} — {s.quantity_sold} x ${s.unit_price} (
-                    {s.payment_status})
-                  </li>
-                ))}
-              </ul>
+              <div style={{ display: "grid", gap: 8 }}>
+                {sales.slice(0, 10).map((s) => {
+                  const name = productNameById[s.product_id] || s.product_id;
+                  return (
+                    <div
+                      key={s.id}
+                      style={{
+                        padding: "10px 12px",
+                        borderRadius: 14,
+                        border: `1px solid ${BORDER}`,
+                        background: SOFT,
+                        display: "flex",
+                        justifyContent: "space-between",
+                        gap: 10,
+                      }}
+                    >
+                      <div style={{ fontWeight: 900, color: TEXT }}>{name}</div>
+                      <div style={{ color: MUTED, fontWeight: 800 }}>
+                        {s.quantity_sold} × ${fmt(s.unit_price)} • {s.payment_status}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
 
-          <div style={{ border: "1px solid #ddd", borderRadius: 16, padding: 16 }}>
-            <h3 style={{ margin: 0, marginBottom: 12 }}>Recent Expenses</h3>
+          <div style={cardStyle}>
+            <div style={{ fontWeight: 950, marginBottom: 10, color: TEXT }}>
+              Recent Expenses
+            </div>
             {expenses.length === 0 ? (
-              <div>No expenses yet</div>
+              <div style={{ color: MUTED, fontWeight: 800 }}>No expenses yet</div>
             ) : (
-              <ul style={{ margin: 0, paddingLeft: 18 }}>
+              <div style={{ display: "grid", gap: 8 }}>
                 {expenses.slice(0, 10).map((e) => (
-                  <li key={e.id}>
-                    {e.category} — ${(e.amount || 0).toFixed(2)}
-                  </li>
+                  <div
+                    key={e.id}
+                    style={{
+                      padding: "10px 12px",
+                      borderRadius: 14,
+                      border: `1px solid ${BORDER}`,
+                      background: SOFT,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 10,
+                    }}
+                  >
+                    <div style={{ fontWeight: 900, color: TEXT }}>
+                      {e.name || e.category || "expense"}
+                    </div>
+                    <div style={{ color: MUTED, fontWeight: 900 }}>
+                      ${fmt(e.amount)}
+                    </div>
+                  </div>
                 ))}
-              </ul>
+              </div>
             )}
           </div>
         </div>
@@ -308,4 +396,3 @@ export default function DashboardPage() {
     </AuthGate>
   );
 }
-
