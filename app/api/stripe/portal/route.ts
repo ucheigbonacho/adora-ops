@@ -1,4 +1,3 @@
-// app/api/stripe/portal/route.ts
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 
@@ -9,21 +8,26 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const stripe_customer_id = String(body?.stripe_customer_id || "").trim();
+    const customerId = String(body?.stripe_customer_id || "").trim();
+    const workspaceId = String(body?.workspace_id || "").trim();
 
-    if (!stripe_customer_id) {
+    if (!customerId) {
       return NextResponse.json(
         { ok: false, error: "Missing stripe_customer_id" },
         { status: 400 }
       );
     }
 
-    const origin = req.headers.get("origin") || process.env.APP_ORIGIN || "http://localhost:3000";
-    const returnPath = process.env.STRIPE_CUSTOMER_PORTAL_RETURN_URL || "/billing";
+    const origin =
+      req.headers.get("origin") ||
+      process.env.APP_ORIGIN ||
+      "http://localhost:3000";
 
     const session = await stripe.billingPortal.sessions.create({
-      customer: stripe_customer_id,
-      return_url: `${origin}${returnPath.startsWith("/") ? "" : "/"}${returnPath}`,
+      customer: customerId,
+      return_url: `${origin}/billing`,
+      // optional reference for your own tracking
+      ...(workspaceId ? { metadata: { workspace_id: workspaceId } } : {}),
     });
 
     return NextResponse.json({ ok: true, url: session.url });

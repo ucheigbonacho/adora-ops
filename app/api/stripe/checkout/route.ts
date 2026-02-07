@@ -1,10 +1,10 @@
-// app/api/stripe/checkout/route.ts
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 import { currencyFromCountry, Currency } from "@/lib/geoCurrency";
 
 export const runtime = "nodejs";
 
+// 🚫 DO NOT set apiVersion here — Stripe SDK types handle it automatically
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
 type Plan = "starter" | "standard" | "premium";
@@ -13,24 +13,16 @@ function isCurrency(v: string): v is Currency {
   return v === "usd" || v === "cad" || v === "gbp" || v === "ngn";
 }
 
-function isPlan(v: string): v is Plan {
-  return v === "starter" || v === "standard" || v === "premium";
-}
-
 function getPriceId(plan: Plan, currency: Currency) {
-  const key =
-    `STRIPE_PRICE_${plan.toUpperCase()}_${currency.toUpperCase()}` as const;
-  const priceId = process.env[key];
-  return priceId || null;
+  const key = `STRIPE_PRICE_${plan.toUpperCase()}_${currency.toUpperCase()}` as const;
+  return process.env[key] || null;
 }
 
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
 
-    const planRaw = String(body?.plan || "standard").toLowerCase().trim();
-    const plan: Plan = isPlan(planRaw) ? planRaw : "standard";
-
+    const plan = String(body?.plan || "standard") as Plan;
     const workspace_id = String(body?.workspace_id || "").trim();
     const overrideCurrency = String(body?.currency || "").toLowerCase().trim();
 
@@ -41,57 +33,57 @@ export async function POST(req: Request) {
       );
     }
 
-    // Must be absolute URL (scheme included)
-    const headersObj = new Headers(req.headers);
+    const headers = new Headers(req.headers);
     const origin =
-      headersObj.get("origin") ||
-      process.env.NEXT_PUBLIC_APP_ORIGIN ||
+      headers.get("origin") ||
       process.env.APP_ORIGIN ||
       "http://localhost:3000";
 
-    // geo headers (Vercel/Cloudflare/etc.)
+    // 🌍 Detect user country → choose currency
     const country =
-      headersObj.get("x-vercel-ip-country") ||
-      headersObj.get("cf-ipcountry") ||
-      headersObj.get("x-country") ||
+      headers.get("x-vercel-ip-country") ||
+      headers.get("cf-ipcountry") ||
+      headers.get("x-country") ||
       null;
 
-    const detected = currencyFromCountry(country);
+    const detectedCurrency = currencyFromCountry(country);
     const currency: Currency = isCurrency(overrideCurrency)
       ? overrideCurrency
-      : detected;
+      : detectedCurrency;
 
-    // pick priceId, fallback to USD if missing
+    // 💰 Get Stripe Price ID for plan + currency
     let priceId = getPriceId(plan, currency);
-    let finalCurrency: Currency = currency;
+    let finalCurrency = currency;
 
+    // Fallback to USD if not configured
     if (!priceId) {
       priceId = getPriceId(plan, "usd");
       finalCurrency = "usd";
     }
+
     if (!priceId) {
-      throw new Error(
-        `Missing Stripe price env vars for plan=${plan}. Expected STRIPE_PRICE_${plan.toUpperCase()}_${finalCurrency.toUpperCase()}`
-      );
+      throw new Error(`Missing Stripe price env vars for plan=${plan}`);
     }
 
-    // ✅ 7-day trial (card required by Stripe Checkout)
-    // If you want to disable trial for a plan, remove subscription_data for that plan.
-    const trialDays =
-      plan === "starter" ? 0 : 7; // starter: no trial, standard/premium: 7 days
-
+    // 🚀 Create Stripe Checkout Session
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       line_items: [{ price: priceId, quantity: 1 }],
 
-      ...(trialDays > 0
-        ? { subscription_data: { trial_period_days: trialDays } }
-        : {}),
+      // 🎁 7-day free trial
+      subscription_data: {
+        trial_period_days: 7,
+        metadata: {
+          workspace_id,
+          plan,
+        },
+      },
 
       success_url: `${origin}/billing?success=1`,
       cancel_url: `${origin}/pricing?canceled=1`,
 
       client_reference_id: workspace_id,
+
       metadata: {
         workspace_id,
         plan,
@@ -104,7 +96,6 @@ export async function POST(req: Request) {
       ok: true,
       url: session.url,
       currency: finalCurrency,
-      trial_days: trialDays,
     });
   } catch (e: any) {
     return NextResponse.json(
