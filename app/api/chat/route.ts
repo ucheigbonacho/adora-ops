@@ -1,7 +1,8 @@
 // app/api/chat/route.ts
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
-import { supabaseAdmin } from "@/lib/adminSupabase";
+import { supabaseAdmin as admin } from "@/lib/adminSupabase";
+ // ✅ IMPORTANT: this file exports `admin`
 
 export const runtime = "nodejs";
 
@@ -12,15 +13,14 @@ export const runtime = "nodejs";
  * SUPABASE_SERVICE_ROLE_KEY=...
  * RESEND_API_KEY=... (required for premium email/invoice sending)
  * RESEND_FROM="Adora Ops <support@adoraops.com>"
+ * APP_ORIGIN=https://adoraops.com
  */
 
 const openaiApiKey = process.env.OPENAI_API_KEY || "";
 const openai = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
-const DEFAULT_REORDER_THRESHOLD = Number(
-  process.env.DEFAULT_REORDER_THRESHOLD || 5
-);
+const DEFAULT_REORDER_THRESHOLD = Number(process.env.DEFAULT_REORDER_THRESHOLD || 5);
 
 type Action =
   | "record_sale"
@@ -95,7 +95,7 @@ function isEmail(s: string) {
    PREMIUM CHECK (workspace plan + subscription status)
 -------------------------------------------------------- */
 async function getWorkspacePlan(workspace_id: string) {
-  const { data, error } = await supabaseAdmin
+  const { data, error } = await admin
     .from("workspaces")
     .select("id, plan, subscription_status")
     .eq("id", workspace_id)
@@ -106,9 +106,7 @@ async function getWorkspacePlan(workspace_id: string) {
   const plan = String(data?.plan || "standard").toLowerCase();
   const status = String(data?.subscription_status || "").toLowerCase();
 
-  // Treat active/trialing as paid
   const isPaid = status === "active" || status === "trialing" || plan === "premium";
-
   return { plan, status, isPaid };
 }
 
@@ -137,7 +135,6 @@ function extractFirstEmail(s: string) {
   return m ? m[0] : "";
 }
 
-// "Email john@example.com subject: Hello message: Thanks!"
 function parseEmailSentence(s: string): Command | null {
   const lower = s.toLowerCase();
   if (!(lower.includes("email") || lower.includes("send email") || lower.includes("mail "))) return null;
@@ -145,15 +142,12 @@ function parseEmailSentence(s: string): Command | null {
   const to = extractFirstEmail(s);
   if (!to) return null;
 
-  // subject:
   const subjectMatch = s.match(/subject\s*:\s*([^]+?)(?:\s+message\s*:|$)/i);
   const subject = subjectMatch ? subjectMatch[1].trim() : "";
 
-  // message:
   const messageMatch = s.match(/message\s*:\s*([^]+)$/i);
   let message = messageMatch ? messageMatch[1].trim() : "";
 
-  // fallback: remove "email <to>" part
   if (!message) {
     message = s
       .replace(/send\s+email/i, "")
@@ -171,7 +165,6 @@ function parseEmailSentence(s: string): Command | null {
   };
 }
 
-// "Create invoice for john@example.com for 2 rice at $4 each"
 function parseInvoiceOrReceiptSentence(s: string): Command | null {
   const lower = s.toLowerCase();
   const wantsInvoice = lower.includes("invoice");
@@ -181,7 +174,6 @@ function parseInvoiceOrReceiptSentence(s: string): Command | null {
   const to = extractFirstEmail(s);
   if (!to) return null;
 
-  // Try to parse ONE line item like: "2 rice for 4 dollars each" or "2 rice at 4"
   const qtyMatch = s.match(/(\d+(?:\.\d+)?)\s+([a-zA-Z][\w\s-]+)/i);
   const priceMatch = s.match(/(?:\$)?(\d+(?:\.\d+)?)(?:\s*(?:dollars?)?)\s*(?:each)?/i);
 
@@ -189,17 +181,12 @@ function parseInvoiceOrReceiptSentence(s: string): Command | null {
 
   if (qtyMatch && priceMatch) {
     const qty = Math.max(1, Math.round(asNumber(qtyMatch[1]) || 1));
-    const name = String(qtyMatch[2] || "")
-      .split(/\s+for\s+|\s+at\s+/i)[0]
-      .trim();
+    const name = String(qtyMatch[2] || "").split(/\s+for\s+|\s+at\s+/i)[0].trim();
     const unit_price = Math.max(0, asNumber(priceMatch[1]) || 0);
 
-    if (name && unit_price >= 0) {
-      items = [{ name, qty, unit_price }];
-    }
+    if (name && unit_price >= 0) items = [{ name, qty, unit_price }];
   }
 
-  // note:
   const noteMatch = s.match(/note\s*:\s*([^]+)$/i);
   const note = noteMatch ? noteMatch[1].trim() : "";
 
@@ -208,7 +195,7 @@ function parseInvoiceOrReceiptSentence(s: string): Command | null {
     to,
     items: items.length ? items : undefined,
     note: note || undefined,
-    send_email: true, // default: send it
+    send_email: true,
   };
 }
 
@@ -243,8 +230,7 @@ function parseSaleSentence(s: string): Command | null {
 
 function parseExpenseSentence(s: string): Command | null {
   const lower = s.toLowerCase();
-  const looksExpense =
-    lower.includes("paid") || lower.includes("spent") || lower.includes("expense");
+  const looksExpense = lower.includes("paid") || lower.includes("spent") || lower.includes("expense");
   if (!looksExpense) return null;
 
   const amount = extractAmount(s);
@@ -344,9 +330,9 @@ function localExtract(text: string): Command[] {
 
 async function findProduct(workspace_id: string, product_name: string) {
   const q = `%${product_name}%`;
-  const { data, error } = await supabaseAdmin
+  const { data, error } = await admin
     .from("products")
-    .select("id, name, reorder_threshold")
+    .select("id, name, reorder_threshold, cost_price")
     .eq("workspace_id", workspace_id)
     .ilike("name", q)
     .order("name", { ascending: true })
@@ -354,7 +340,7 @@ async function findProduct(workspace_id: string, product_name: string) {
     .maybeSingle();
 
   if (error) throw new Error(error.message);
-  return data as { id: string; name: string; reorder_threshold: number | null } | null;
+  return data as { id: string; name: string; reorder_threshold: number | null; cost_price: number | null } | null;
 }
 
 async function createProduct(workspace_id: string, product_name: string, reorder_threshold?: number) {
@@ -364,18 +350,18 @@ async function createProduct(workspace_id: string, product_name: string, reorder
       ? Number(reorder_threshold)
       : DEFAULT_REORDER_THRESHOLD;
 
-  const { data, error } = await supabaseAdmin
+  const { data, error } = await admin
     .from("products")
-    .insert([{ workspace_id, name, reorder_threshold: rt }])
-    .select("id, name, reorder_threshold")
+    .insert([{ workspace_id, name, reorder_threshold: rt, cost_price: 0 }])
+    .select("id, name, reorder_threshold, cost_price")
     .single();
 
   if (error) throw new Error(error.message);
-  return data as { id: string; name: string; reorder_threshold: number | null };
+  return data as { id: string; name: string; reorder_threshold: number | null; cost_price: number | null };
 }
 
 async function adjustInventory(workspace_id: string, product_id: string, delta: number) {
-  const { data: inv, error: invErr } = await supabaseAdmin
+  const { data: inv, error: invErr } = await admin
     .from("inventory_balances")
     .select("quantity_on_hand")
     .eq("workspace_id", workspace_id)
@@ -385,7 +371,7 @@ async function adjustInventory(workspace_id: string, product_id: string, delta: 
   if (invErr) throw new Error(invErr.message);
 
   if (!inv) {
-    const { error: insErr } = await supabaseAdmin
+    const { error: insErr } = await admin
       .from("inventory_balances")
       .insert([{ workspace_id, product_id, quantity_on_hand: delta }]);
     if (insErr) throw new Error(insErr.message);
@@ -394,7 +380,7 @@ async function adjustInventory(workspace_id: string, product_id: string, delta: 
 
   const newQty = Number(inv.quantity_on_hand || 0) + delta;
 
-  const { error: updErr } = await supabaseAdmin
+  const { error: updErr } = await admin
     .from("inventory_balances")
     .update({ quantity_on_hand: newQty })
     .eq("workspace_id", workspace_id)
@@ -419,15 +405,16 @@ function todayStartISO() {
 async function runAnalytics(workspace_id: string, period: "today" | "month") {
   const start = period === "month" ? monthStartISO() : todayStartISO();
 
-  const { data: sales, error: sErr } = await supabaseAdmin
+  // ✅ include products(cost_price) for COGS
+  const { data: sales, error: sErr } = await admin
     .from("sales")
-    .select("product_id, quantity_sold, unit_price, payment_status, created_at")
+    .select("product_id, quantity_sold, unit_price, payment_status, created_at, products(cost_price)")
     .eq("workspace_id", workspace_id)
     .gte("created_at", start);
 
   if (sErr) throw new Error(sErr.message);
 
-  const { data: expenses, error: eErr } = await supabaseAdmin
+  const { data: expenses, error: eErr } = await admin
     .from("expenses")
     .select("amount, category, created_at")
     .eq("workspace_id", workspace_id)
@@ -451,8 +438,18 @@ async function runAnalytics(workspace_id: string, period: "today" | "month") {
     .filter((x: any) => String(x.category || "").toLowerCase() === "inventory")
     .reduce((sum: number, x: any) => sum + Number(x.amount || 0), 0);
 
+  // ✅ COGS from products.cost_price
+  const cogsTotal = (sales || []).reduce((sum: number, x: any) => {
+    const qty = Number(x.quantity_sold || 0);
+    const cost = Number(x.products?.cost_price || 0);
+    return sum + qty * cost;
+  }, 0);
+
   const profitAfterInventoryPurchases = revenueTotal - expensesTotal;
   const profitWithoutInventoryPurchases = revenueTotal - (expensesTotal - inventoryPurchases);
+
+  // ✅ True profit including cost of goods sold
+  const profitAfterCOGS = revenueTotal - expensesTotal - cogsTotal;
 
   return {
     period,
@@ -461,8 +458,10 @@ async function runAnalytics(workspace_id: string, period: "today" | "month") {
     revenueUnpaid,
     expensesTotal,
     inventoryPurchases,
+    cogsTotal,
     profitAfterInventoryPurchases,
     profitWithoutInventoryPurchases,
+    profitAfterCOGS,
   };
 }
 
@@ -531,13 +530,11 @@ export async function POST(req: Request) {
 
     const planInfo = await getWorkspacePlan(workspace_id);
 
-    // 1) local parse first
     let actions: Command[] = localExtract(text);
 
     const localOnlyUnknown =
       actions.length === 1 && safeStr((actions[0] as any).action) === "unknown";
 
-    // 2) if local can’t parse and OpenAI exists, try it
     if (localOnlyUnknown) {
       try {
         actions = await aiExtract(text);
@@ -557,13 +554,12 @@ export async function POST(req: Request) {
         continue;
       }
 
-      // Premium gating
       if (requiresPremium(action) && !planInfo.isPaid) {
         results.push(`• 🔒 Premium feature. Upgrade to Premium to use: ${action.replaceAll("_", " ")}.`);
         continue;
       }
 
-      // ✅ PREMIUM: EMAIL (calls your API route)
+      // PREMIUM: EMAIL
       if (action === "send_email") {
         const to = safeStr((cmd as any)?.to);
         const subject = safeStr((cmd as any)?.subject) || "Message from Adora Ops";
@@ -578,7 +574,6 @@ export async function POST(req: Request) {
           continue;
         }
 
-        // Call internal route (same server) using APP_ORIGIN
         const origin = process.env.APP_ORIGIN || "http://localhost:3000";
         const res = await fetch(`${origin}/api/email/send`, {
           method: "POST",
@@ -605,12 +600,12 @@ export async function POST(req: Request) {
         continue;
       }
 
-      // ✅ PREMIUM: INVOICE / RECEIPT
+      // PREMIUM: INVOICE/RECEIPT
       if (action === "create_invoice" || action === "create_receipt") {
         const to = safeStr((cmd as any)?.to);
         const items = Array.isArray((cmd as any)?.items) ? (cmd as any).items : [];
         const note = safeStr((cmd as any)?.note);
-        const send_email = (cmd as any)?.send_email !== false; // default true
+        const send_email = (cmd as any)?.send_email !== false;
 
         if (!to || !isEmail(to)) {
           results.push("• Invoice/receipt skipped: invalid email");
@@ -640,14 +635,12 @@ export async function POST(req: Request) {
           continue;
         }
 
-        results.push(
-          `• ${action === "create_invoice" ? "Invoice" : "Receipt"} created ✅ (#${json.docNo}) total: $${Number(json.total || 0).toFixed(2)}`
-        );
+        results.push(`• ${action === "create_invoice" ? "Invoice" : "Receipt"} created ✅ (#${json.docNo}) total: $${Number(json.total || 0).toFixed(2)}`);
         if (json.sent) results.push(`• Sent ✅ to ${to}`);
         continue;
       }
 
-      // -------- ANALYTICS --------
+      // ANALYTICS
       if (action === "analytics") {
         const metric = (cmd as any)?.metric || "profit";
         const period: "today" | "month" = (cmd as any)?.period === "month" ? "month" : "today";
@@ -655,35 +648,29 @@ export async function POST(req: Request) {
         analyticsReply = await runAnalytics(workspace_id, period);
 
         if (metric === "profit") {
+          results.push(`• Profit (${period}) ✅ after COGS: $${analyticsReply.profitAfterCOGS.toFixed(2)}`);
+          results.push(`• COGS (${period}): $${analyticsReply.cogsTotal.toFixed(2)}`);
           results.push(
-            `• Profit (${period}) ✅ after inventory: $${analyticsReply.profitAfterInventoryPurchases.toFixed(
+            `• Revenue (${period}): $${analyticsReply.revenueTotal.toFixed(2)} (paid: $${analyticsReply.revenuePaid.toFixed(
               2
-            )} | operational only: $${analyticsReply.profitWithoutInventoryPurchases.toFixed(2)}`
+            )}, unpaid: $${analyticsReply.revenueUnpaid.toFixed(2)})`
           );
-          results.push(
-            `• Revenue (${period}): $${analyticsReply.revenueTotal.toFixed(
-              2
-            )} (paid: $${analyticsReply.revenuePaid.toFixed(2)}, unpaid: $${analyticsReply.revenueUnpaid.toFixed(2)})`
-          );
+          results.push(`• Expenses (${period}): $${analyticsReply.expensesTotal.toFixed(2)}`);
         } else if (metric === "revenue") {
           results.push(
-            `• Revenue (${period}) ✅ $${analyticsReply.revenueTotal.toFixed(
+            `• Revenue (${period}) ✅ $${analyticsReply.revenueTotal.toFixed(2)} (paid: $${analyticsReply.revenuePaid.toFixed(
               2
-            )} (paid: $${analyticsReply.revenuePaid.toFixed(2)}, unpaid: $${analyticsReply.revenueUnpaid.toFixed(2)})`
+            )}, unpaid: $${analyticsReply.revenueUnpaid.toFixed(2)})`
           );
         } else if (metric === "expenses") {
-          results.push(
-            `• Expenses (${period}) ✅ $${analyticsReply.expensesTotal.toFixed(
-              2
-            )} (inventory purchases: $${analyticsReply.inventoryPurchases.toFixed(2)})`
-          );
+          results.push(`• Expenses (${period}) ✅ $${analyticsReply.expensesTotal.toFixed(2)}`);
         } else {
           results.push(`• Analytics ✅ (${metric}, ${period}) computed.`);
         }
         continue;
       }
 
-      // -------- EXPENSE --------
+      // EXPENSE
       if (action === "record_expense") {
         const expense_name = safeStr((cmd as any)?.expense_name);
         const amount = asNumber((cmd as any)?.amount);
@@ -698,16 +685,14 @@ export async function POST(req: Request) {
           continue;
         }
 
-        const { error: expErr } = await supabaseAdmin.from("expenses").insert([
-          { workspace_id, name: expense_name, amount, category },
-        ]);
+        const { error: expErr } = await admin.from("expenses").insert([{ workspace_id, name: expense_name, amount, category }]);
         if (expErr) throw new Error(expErr.message);
 
         results.push(`• Expense ✅ ${expense_name}: $${amount.toFixed(2)}`);
         continue;
       }
 
-      // -------- SALE / STOCK need product --------
+      // SALE / STOCK need product
       const product_name = safeStr((cmd as any)?.product_name);
       if (!product_name) {
         results.push(`• ${action} skipped: missing product name`);
@@ -720,21 +705,18 @@ export async function POST(req: Request) {
         results.push(`• Product auto-created ✅ ${prod.name}`);
       }
 
-      // -------- SALE --------
+      // SALE
       if (action === "record_sale") {
         const quantity = asNumber((cmd as any)?.quantity);
-        const unit_price = Number.isFinite(asNumber((cmd as any)?.unit_price))
-          ? asNumber((cmd as any)?.unit_price)
-          : 0;
-        const payment_status =
-          ((cmd as any)?.payment_status as "paid" | "unpaid") || "paid";
+        const unit_price = Number.isFinite(asNumber((cmd as any)?.unit_price)) ? asNumber((cmd as any)?.unit_price) : 0;
+        const payment_status = ((cmd as any)?.payment_status as "paid" | "unpaid") || "paid";
 
         if (!Number.isFinite(quantity) || quantity <= 0) {
           results.push("• Sale skipped: invalid quantity");
           continue;
         }
 
-        const { error: saleErr } = await supabaseAdmin.from("sales").insert([
+        const { error: saleErr } = await admin.from("sales").insert([
           { workspace_id, product_id: prod.id, quantity_sold: quantity, unit_price, payment_status },
         ]);
         if (saleErr) throw new Error(saleErr.message);
@@ -744,7 +726,7 @@ export async function POST(req: Request) {
         continue;
       }
 
-      // -------- STOCK --------
+      // STOCK
       if (action === "add_stock" || action === "remove_stock") {
         const quantity = asNumber((cmd as any)?.quantity);
         if (!Number.isFinite(quantity) || quantity <= 0) {
@@ -774,20 +756,16 @@ export async function POST(req: Request) {
       suggestions: [
         "profit today",
         "profit this month",
-        "top selling products today",
-        "paid vs unpaid revenue",
+        "revenue today",
+        "expenses this month",
         "email customer@domain.com subject: ... message: ...",
         "create invoice for customer@domain.com for 2 rice at $4 each",
       ],
     });
   } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, error: e?.message || "Unknown error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: false, error: e?.message || "Unknown error" }, { status: 500 });
   }
 }
-
 
 
 
