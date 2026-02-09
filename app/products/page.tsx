@@ -7,56 +7,27 @@ import AuthGate from "@/components/AuthWorkspaceGate";
 type Product = {
   id: string;
   name: string;
-  reorder_threshold: number | null;
+  reorder_threshold: number;
   cost_price: number | null;
-  created_at?: string;
+  units_per_bulk: number | null;
 };
 
-function safeStr(v: any) {
-  return String(v ?? "").trim();
+function stripLeadingZeros(s: string) {
+  // keep "0" if user typed only zeros
+  const cleaned = s.replace(/[^\d.]/g, ""); // allow decimals for cost
+  if (!cleaned) return "";
+  // handle decimals like 0.5
+  if (cleaned.includes(".")) {
+    const [a, b] = cleaned.split(".");
+    const a2 = a.replace(/^0+(?=\d)/, "");
+    return `${a2 || "0"}.${(b ?? "").replace(/[^\d]/g, "")}`;
+  }
+  return cleaned.replace(/^0+(?=\d)/, "");
 }
 
-/**
- * Strips leading zeros for "integer-like" typing while preserving decimals:
- * "030" -> "30"
- * "0005" -> "5"
- * "0.50" stays "0.50"
- * "" stays ""
- * "." -> "0."
- */
-function stripLeadingZeros(input: string) {
-  let s = String(input ?? "");
-
-  if (s === "") return "";
-  s = s.trim();
-
-  if (s === ".") return "0.";
-
-  // allow 0.xxx
-  if (/^0\.\d*$/.test(s)) return s;
-
-  // 00012 -> 12  (keep single 0 if all zeros)
-  if (/^0+\d+$/.test(s)) {
-    const n = s.replace(/^0+/, "");
-    return n === "" ? "0" : n;
-  }
-
-  // 00012.34 -> 12.34
-  if (/^0+\d+\.\d*$/.test(s)) {
-    s = s.replace(/^0+/, "");
-    if (s.startsWith(".")) s = "0" + s;
-    return s;
-  }
-
-  return s;
-}
-
-/** "" => null, otherwise number or null if invalid */
-function toNumberOrNull(v: string) {
-  const s = String(v ?? "").trim();
-  if (s === "") return null;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : null;
+function toNumberSafe(v: string, fallback = 0) {
+  const n = Number(String(v ?? "").replace(/,/g, "").trim());
+  return Number.isFinite(n) ? n : fallback;
 }
 
 export default function ProductsPage() {
@@ -64,59 +35,19 @@ export default function ProductsPage() {
 
   const [products, setProducts] = useState<Product[]>([]);
 
-  // Add product form (strings to control leading zeros nicely)
+  // create form as strings (prevents "030" UI issue)
   const [name, setName] = useState("");
-  const [reorderStr, setReorderStr] = useState<string>(""); // empty => 0
-  const [costStr, setCostStr] = useState<string>(""); // empty => 0
+  const [reorderStr, setReorderStr] = useState("0");
+  const [costStr, setCostStr] = useState("0");
+  const [unitsStr, setUnitsStr] = useState("1");
 
   const [loading, setLoading] = useState(false);
-  const [savingId, setSavingId] = useState<string | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  const brand = {
-    text: "#0B1220",
-    muted: "#5B6475",
-    border: "#E6E8EE",
-    card: "#FFFFFF",
-    cardSoft: "#F7F9FC",
-    primary: "#1F6FEB",
-    primarySoft: "#E9F2FF",
-    danger: "#DC2626",
-    dangerSoft: "#FEE2E2",
-  };
-
-  const inputStyle: React.CSSProperties = {
-    width: "100%",
-    padding: "12px 12px",
-    marginTop: 8,
-    borderRadius: 12,
-    border: `1px solid ${brand.border}`,
-    fontSize: 16,
-    outline: "none",
-    background: "#fff",
-  };
-
-  const buttonPrimary: React.CSSProperties = {
-    padding: "12px 14px",
-    borderRadius: 14,
-    border: `1px solid ${brand.primary}`,
-    background: brand.primary,
-    color: "#fff",
-    fontWeight: 900,
-    fontSize: 16,
-    cursor: "pointer",
-  };
-
-  const buttonGhost: React.CSSProperties = {
-    padding: "12px 14px",
-    borderRadius: 14,
-    border: `1px solid ${brand.border}`,
-    background: "#fff",
-    color: brand.text,
-    fontWeight: 900,
-    fontSize: 16,
-    cursor: "pointer",
-  };
+  // editing row
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editReorder, setEditReorder] = useState("0");
+  const [editCost, setEditCost] = useState("0");
+  const [editUnits, setEditUnits] = useState("1");
 
   useEffect(() => {
     setWorkspaceId(localStorage.getItem("workspace_id"));
@@ -125,23 +56,24 @@ export default function ProductsPage() {
   async function loadProducts() {
     if (!workspaceId) return;
 
-    setLoading(true);
-    try {
-      const { data, error } = await supabase
-        .from("products")
-        .select("id, name, reorder_threshold, cost_price, created_at")
-        .eq("workspace_id", workspaceId)
-        .order("created_at", { ascending: false });
+    const { data, error } = await supabase
+      .from("products")
+      .select("id, name, reorder_threshold, cost_price, units_per_bulk")
+      .eq("workspace_id", workspaceId)
+      .order("created_at", { ascending: false });
 
-      if (error) throw new Error(error.message);
-
-      setProducts((data as Product[]) || []);
-    } catch (e: any) {
-      alert("Failed to load products: " + (e?.message || "unknown error"));
-    } finally {
-      setLoading(false);
+    if (error) {
+      alert("Failed to load products: " + error.message);
+      return;
     }
+
+    setProducts((data as Product[]) || []);
   }
+
+  useEffect(() => {
+    if (workspaceId) loadProducts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId]);
 
   // 🔄 AUTO REFRESH WHEN ASSISTANT UPDATES DATA
   useEffect(() => {
@@ -151,410 +83,277 @@ export default function ProductsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId]);
 
-  useEffect(() => {
-    if (workspaceId) loadProducts();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId]);
-
   async function addProduct() {
     if (!workspaceId) return;
 
-    const n = safeStr(name);
-    if (!n) {
+    const nm = name.trim();
+    if (!nm) {
       alert("Enter product name");
       return;
     }
 
-    const reorder = toNumberOrNull(reorderStr) ?? 0;
-    const cost_price = toNumberOrNull(costStr) ?? 0;
-
-    if (reorder < 0) return alert("Reorder threshold must be >= 0");
-    if (cost_price < 0) return alert("Cost price must be >= 0");
+    const reorder = Math.max(0, Math.floor(toNumberSafe(reorderStr, 0)));
+    const cost_price = Math.max(0, toNumberSafe(costStr, 0));
+    const units_per_bulk = Math.max(1, Math.floor(toNumberSafe(unitsStr, 1)));
 
     setLoading(true);
-    try {
-      const { error } = await supabase.from("products").insert([
-        {
-          workspace_id: workspaceId,
-          name: n,
-          reorder_threshold: Math.round(reorder),
-          cost_price,
-        },
-      ]);
 
-      if (error) throw new Error(error.message);
+    const { error } = await supabase.from("products").insert([
+      {
+        workspace_id: workspaceId,
+        name: nm,
+        reorder_threshold: reorder,
+        cost_price,
+        units_per_bulk,
+      },
+    ]);
 
-      setName("");
-      setReorderStr("");
-      setCostStr("");
-
-      await loadProducts();
-      window.dispatchEvent(new Event("adora:refresh"));
-    } catch (e: any) {
-      alert("Failed to add product: " + (e?.message || "unknown error"));
-    } finally {
+    if (error) {
       setLoading(false);
+      alert("Failed to add product: " + error.message);
+      return;
     }
+
+    setName("");
+    setReorderStr("0");
+    setCostStr("0");
+    setUnitsStr("1");
+
+    await loadProducts();
+    window.dispatchEvent(new Event("adora:refresh"));
+    setLoading(false);
   }
 
-  async function updateProduct(p: Product, next: Partial<Product>) {
+  function startEdit(p: Product) {
+    setEditId(p.id);
+    setEditReorder(String(p.reorder_threshold ?? 0));
+    setEditCost(String(p.cost_price ?? 0));
+    setEditUnits(String(p.units_per_bulk ?? 1));
+  }
+
+  function cancelEdit() {
+    setEditId(null);
+    setEditReorder("0");
+    setEditCost("0");
+    setEditUnits("1");
+  }
+
+  async function saveEdit(p: Product) {
     if (!workspaceId) return;
 
-    setSavingId(p.id);
-    try {
-      const patch: any = {};
-      if (next.reorder_threshold !== undefined) patch.reorder_threshold = next.reorder_threshold;
-      if (next.cost_price !== undefined) patch.cost_price = next.cost_price;
+    const reorder_threshold = Math.max(0, Math.floor(toNumberSafe(editReorder, 0)));
+    const cost_price = Math.max(0, toNumberSafe(editCost, 0));
+    const units_per_bulk = Math.max(1, Math.floor(toNumberSafe(editUnits, 1)));
 
-      const { error } = await supabase
-        .from("products")
-        .update(patch)
-        .eq("workspace_id", workspaceId)
-        .eq("id", p.id);
+    setLoading(true);
 
-      if (error) throw new Error(error.message);
+    const { error } = await supabase
+      .from("products")
+      .update({ reorder_threshold, cost_price, units_per_bulk })
+      .eq("workspace_id", workspaceId)
+      .eq("id", p.id);
 
-      setProducts((prev) => prev.map((x) => (x.id === p.id ? { ...x, ...next } : x)));
-      window.dispatchEvent(new Event("adora:refresh"));
-    } catch (e: any) {
-      alert("Update failed: " + (e?.message || "unknown error"));
-    } finally {
-      setSavingId(null);
+    setLoading(false);
+
+    if (error) {
+      alert("Failed to save: " + error.message);
+      return;
     }
+
+    cancelEdit();
+    await loadProducts();
+    window.dispatchEvent(new Event("adora:refresh"));
   }
 
-  async function deleteProduct(p: Product) {
-    if (!workspaceId) return;
+  const card: React.CSSProperties = {
+    border: "1px solid #E6E8EE",
+    borderRadius: 18,
+    padding: 16,
+    background: "#fff",
+    boxShadow: "0 10px 26px rgba(0,0,0,0.06)",
+  };
 
-    const ok = confirm(`Delete "${p.name}"? This cannot be undone.`);
-    if (!ok) return;
+  const input: React.CSSProperties = {
+    width: "100%",
+    padding: "12px 12px",
+    borderRadius: 12,
+    border: "1px solid #E6E8EE",
+    fontSize: 16,
+    outline: "none",
+  };
 
-    setDeletingId(p.id);
-    try {
-      const { error } = await supabase
-        .from("products")
-        .delete()
-        .eq("workspace_id", workspaceId)
-        .eq("id", p.id);
+  const btn: React.CSSProperties = {
+    padding: "12px 14px",
+    borderRadius: 14,
+    border: "1px solid #0B1220",
+    background: "#0B1220",
+    color: "#fff",
+    fontWeight: 900,
+    fontSize: 15,
+    cursor: "pointer",
+  };
 
-      if (error) throw new Error(error.message);
+  const btnGhost: React.CSSProperties = {
+    padding: "12px 14px",
+    borderRadius: 14,
+    border: "1px solid #E6E8EE",
+    background: "#fff",
+    color: "#0B1220",
+    fontWeight: 900,
+    fontSize: 15,
+    cursor: "pointer",
+  };
 
-      setProducts((prev) => prev.filter((x) => x.id !== p.id));
-      window.dispatchEvent(new Event("adora:refresh"));
-    } catch (e: any) {
-      alert("Delete failed: " + (e?.message || "unknown error"));
-    } finally {
-      setDeletingId(null);
-    }
-  }
-
-  const count = useMemo(() => products.length, [products]);
+  const helper = useMemo(() => {
+    return `Bulk → units example: cost_price=30, units_per_bulk=40 → unit cost = 0.75`;
+  }, []);
 
   return (
     <AuthGate>
-      <div style={{ padding: 16, maxWidth: 980, margin: "0 auto", color: brand.text }}>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "flex-end",
-            justifyContent: "space-between",
-            gap: 12,
-            flexWrap: "wrap",
-            marginBottom: 14,
-          }}
-        >
-          <div>
-            <h1 style={{ margin: 0, fontSize: 28, lineHeight: 1.1 }}>Products</h1>
-            <p style={{ margin: "8px 0 0", color: brand.muted }}>
-              Add products and set <b>reorder level</b> + <b>cost price</b>.
-            </p>
-          </div>
+      <div style={{ padding: 16, maxWidth: 980, margin: "0 auto" }}>
+        <h1 style={{ margin: 0, fontSize: 28 }}>Products</h1>
+        <p style={{ marginTop: 8, color: "#5B6475" }}>
+          Add products with <b>bulk cost</b> + <b>units per bulk</b> (carton/crate/bag).
+          Inventory is tracked in <b>selling units</b>.
+        </p>
+        <p style={{ marginTop: 0, color: "#5B6475" }}>{helper}</p>
 
-          <button onClick={loadProducts} disabled={loading} style={buttonGhost}>
-            {loading ? "Refreshing…" : "Refresh"}
-          </button>
-        </div>
-
-        {/* Add Product */}
-        <div
-          style={{
-            border: `1px solid ${brand.border}`,
-            background: brand.card,
-            borderRadius: 18,
-            padding: 16,
-            boxShadow: "0 10px 26px rgba(0,0,0,0.06)",
-          }}
-        >
-          <div style={{ fontWeight: 1000, fontSize: 16 }}>Add product</div>
-
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-              gap: 12,
-              marginTop: 12,
-            }}
-          >
-            <label style={{ fontWeight: 800 }}>
+        {/* Add product */}
+        <div style={{ ...card, marginTop: 10 }}>
+          <div style={{ display: "grid", gap: 12, maxWidth: 560 }}>
+            <label style={{ fontWeight: 900 }}>
               Product name
               <input
-                style={inputStyle}
-                placeholder="e.g. Rice"
+                style={input}
+                placeholder="e.g., Indomie"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
               />
             </label>
 
-            <label style={{ fontWeight: 800 }}>
-              Reorder threshold
+            <label style={{ fontWeight: 900 }}>
+              Reorder threshold (selling units)
               <input
-                style={inputStyle}
+                style={input}
                 inputMode="numeric"
-                placeholder="e.g. 5"
                 value={reorderStr}
-                onFocus={() => {
-                  if (reorderStr === "0") setReorderStr("");
-                }}
                 onChange={(e) => setReorderStr(stripLeadingZeros(e.target.value))}
               />
             </label>
 
-            <label style={{ fontWeight: 800 }}>
-              Cost price (purchase cost)
+            <label style={{ fontWeight: 900 }}>
+              Cost per bulk package (cost_price)
               <input
-                style={inputStyle}
+                style={input}
                 inputMode="decimal"
-                placeholder="e.g. 2.50"
                 value={costStr}
-                onFocus={() => {
-                  if (costStr === "0") setCostStr("");
-                }}
                 onChange={(e) => setCostStr(stripLeadingZeros(e.target.value))}
               />
             </label>
-          </div>
 
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14 }}>
-            <button onClick={addProduct} disabled={loading} style={buttonPrimary}>
-              {loading ? "Saving…" : "Add Product"}
+            <label style={{ fontWeight: 900 }}>
+              Units per bulk package (units_per_bulk)
+              <input
+                style={input}
+                inputMode="numeric"
+                value={unitsStr}
+                onChange={(e) => {
+                  const v = stripLeadingZeros(e.target.value);
+                  setUnitsStr(v === "" ? "" : String(Math.max(1, Math.floor(toNumberSafe(v, 1)))));
+                }}
+              />
+            </label>
+
+            <button onClick={addProduct} disabled={loading} style={btn}>
+              {loading ? "Saving..." : "Add Product"}
             </button>
-            <a
-              href="/import"
-              style={{
-                ...buttonGhost,
-                textDecoration: "none",
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              Import Products →
-            </a>
           </div>
         </div>
 
-        {/* List */}
-        <div style={{ marginTop: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-            <h2 style={{ margin: 0, fontSize: 18 }}>Product List</h2>
-            <div style={{ color: brand.muted, fontWeight: 800 }}>{count} products</div>
-          </div>
+        <hr style={{ margin: "18px 0", borderColor: "#E6E8EE" }} />
 
-          {products.length === 0 ? (
-            <div
-              style={{
-                marginTop: 10,
-                border: `1px solid ${brand.border}`,
-                background: brand.card,
-                borderRadius: 18,
-                padding: 16,
-              }}
-            >
-              <p style={{ margin: 0, color: brand.muted }}>No products yet.</p>
-            </div>
-          ) : (
-            <div style={{ display: "grid", gap: 12, marginTop: 10 }}>
-              {products.map((p) => (
-                <ProductCard
-                  key={p.id}
-                  product={p}
-                  brand={brand}
-                  saving={savingId === p.id}
-                  deleting={deletingId === p.id}
-                  onSave={(next) => updateProduct(p, next)}
-                  onDelete={() => deleteProduct(p)}
-                />
-              ))}
-            </div>
-          )}
-        </div>
+        <h2 style={{ margin: 0, fontSize: 20 }}>Product List</h2>
+
+        {products.length === 0 ? (
+          <p style={{ color: "#5B6475" }}>No products yet.</p>
+        ) : (
+          <div style={{ display: "grid", gap: 12, marginTop: 12 }}>
+            {products.map((p) => {
+              const isEditing = editId === p.id;
+              const units = Math.max(1, Number(p.units_per_bulk ?? 1));
+              const bulkCost = Number(p.cost_price ?? 0);
+              const unitCost = units ? bulkCost / units : 0;
+
+              return (
+                <div key={p.id} style={card}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                    <div>
+                      <div style={{ fontWeight: 1000, fontSize: 16 }}>{p.name}</div>
+                      <div style={{ marginTop: 6, color: "#5B6475", fontSize: 13 }}>
+                        Reorder: <b>{p.reorder_threshold}</b> • Bulk cost: <b>{bulkCost}</b> • Units/bulk:{" "}
+                        <b>{units}</b> • Unit cost: <b>{unitCost.toFixed(4)}</b>
+                      </div>
+                    </div>
+
+                    {!isEditing ? (
+                      <button style={btnGhost} onClick={() => startEdit(p)}>
+                        Edit
+                      </button>
+                    ) : null}
+                  </div>
+
+                  {isEditing ? (
+                    <div style={{ display: "grid", gap: 12, marginTop: 12, maxWidth: 560 }}>
+                      <label style={{ fontWeight: 900 }}>
+                        Reorder threshold
+                        <input
+                          style={input}
+                          inputMode="numeric"
+                          value={editReorder}
+                          onChange={(e) => setEditReorder(stripLeadingZeros(e.target.value))}
+                        />
+                      </label>
+
+                      <label style={{ fontWeight: 900 }}>
+                        Cost per bulk package (cost_price)
+                        <input
+                          style={input}
+                          inputMode="decimal"
+                          value={editCost}
+                          onChange={(e) => setEditCost(stripLeadingZeros(e.target.value))}
+                        />
+                      </label>
+
+                      <label style={{ fontWeight: 900 }}>
+                        Units per bulk package (units_per_bulk)
+                        <input
+                          style={input}
+                          inputMode="numeric"
+                          value={editUnits}
+                          onChange={(e) => {
+                            const v = stripLeadingZeros(e.target.value);
+                            setEditUnits(v === "" ? "" : String(Math.max(1, Math.floor(toNumberSafe(v, 1)))));
+                          }}
+                        />
+                      </label>
+
+                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                        <button style={btn} onClick={() => saveEdit(p)} disabled={loading}>
+                          {loading ? "Saving..." : "Save"}
+                        </button>
+                        <button style={btnGhost} onClick={cancelEdit} disabled={loading}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </AuthGate>
-  );
-}
-
-function ProductCard({
-  product,
-  brand,
-  saving,
-  deleting,
-  onSave,
-  onDelete,
-}: {
-  product: Product;
-  brand: any;
-  saving: boolean;
-  deleting: boolean;
-  onSave: (next: Partial<Product>) => Promise<void>;
-  onDelete: () => void;
-}) {
-  const [reorderStr, setReorderStr] = useState<string>(
-    product.reorder_threshold && product.reorder_threshold !== 0 ? String(product.reorder_threshold) : ""
-  );
-
-  const [costStr, setCostStr] = useState<string>(
-    product.cost_price && Number(product.cost_price) !== 0 ? String(product.cost_price) : ""
-  );
-
-  useEffect(() => {
-    setReorderStr(product.reorder_threshold && product.reorder_threshold !== 0 ? String(product.reorder_threshold) : "");
-    setCostStr(product.cost_price && Number(product.cost_price) !== 0 ? String(product.cost_price) : "");
-  }, [product.id, product.reorder_threshold, product.cost_price]);
-
-  const inputStyle: React.CSSProperties = {
-    width: "100%",
-    padding: "12px 12px",
-    marginTop: 8,
-    borderRadius: 12,
-    border: `1px solid ${brand.border}`,
-    fontSize: 16,
-    outline: "none",
-    background: "#fff",
-  };
-
-  const saveBtn: React.CSSProperties = {
-    padding: "12px 14px",
-    borderRadius: 14,
-    border: `1px solid ${brand.primary}`,
-    background: brand.primary,
-    color: "#fff",
-    fontWeight: 900,
-    cursor: "pointer",
-    minWidth: 120,
-  };
-
-  const ghostBtn: React.CSSProperties = {
-    padding: "12px 14px",
-    borderRadius: 14,
-    border: `1px solid ${brand.border}`,
-    background: "#fff",
-    color: brand.text,
-    fontWeight: 900,
-    cursor: "pointer",
-    minWidth: 120,
-  };
-
-  async function save() {
-    const reorder = toNumberOrNull(reorderStr) ?? 0;
-    const cost_price = toNumberOrNull(costStr) ?? 0;
-
-    if (reorder < 0) return alert("Reorder threshold must be >= 0");
-    if (cost_price < 0) return alert("Cost price must be >= 0");
-
-    await onSave({
-      reorder_threshold: Math.round(reorder),
-      cost_price,
-    });
-  }
-
-  return (
-    <div
-      style={{
-        border: `1px solid ${brand.border}`,
-        background: "#fff",
-        borderRadius: 18,
-        padding: 14,
-        boxShadow: "0 10px 26px rgba(0,0,0,0.06)",
-      }}
-    >
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ fontWeight: 1000, fontSize: 16 }}>{product.name}</div>
-
-        <button
-          onClick={onDelete}
-          disabled={deleting || saving}
-          style={{
-            padding: "10px 12px",
-            borderRadius: 12,
-            border: `1px solid ${brand.border}`,
-            background: brand.dangerSoft,
-            color: brand.danger,
-            fontWeight: 900,
-            cursor: deleting || saving ? "not-allowed" : "pointer",
-          }}
-        >
-          {deleting ? "Deleting…" : "Delete"}
-        </button>
-      </div>
-
-      <div
-        style={{
-          marginTop: 12,
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-          gap: 12,
-          background: brand.cardSoft,
-          border: `1px solid ${brand.border}`,
-          borderRadius: 14,
-          padding: 12,
-        }}
-      >
-        <label style={{ fontWeight: 800 }}>
-          Reorder threshold
-          <input
-            style={inputStyle}
-            inputMode="numeric"
-            placeholder="e.g. 5"
-            value={reorderStr}
-            onFocus={() => {
-              if (reorderStr === "0") setReorderStr("");
-            }}
-            onChange={(e) => setReorderStr(stripLeadingZeros(e.target.value))}
-          />
-        </label>
-
-        <label style={{ fontWeight: 800 }}>
-          Cost price (purchase cost)
-          <input
-            style={inputStyle}
-            inputMode="decimal"
-            placeholder="e.g. 2.50"
-            value={costStr}
-            onFocus={() => {
-              if (costStr === "0") setCostStr("");
-            }}
-            onChange={(e) => setCostStr(stripLeadingZeros(e.target.value))}
-          />
-        </label>
-      </div>
-
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
-        <button onClick={save} disabled={saving || deleting} style={saveBtn}>
-          {saving ? "Saving…" : "Save"}
-        </button>
-
-        <button
-          onClick={() => {
-            setReorderStr(product.reorder_threshold && product.reorder_threshold !== 0 ? String(product.reorder_threshold) : "");
-            setCostStr(product.cost_price && Number(product.cost_price) !== 0 ? String(product.cost_price) : "");
-          }}
-          disabled={saving || deleting}
-          style={ghostBtn}
-        >
-          Reset
-        </button>
-      </div>
-    </div>
   );
 }
 

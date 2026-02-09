@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { supabaseAdmin as admin } from "@/lib/adminSupabase";
- // ✅ IMPORTANT: this file exports `admin`
+// ✅ IMPORTANT: this file exports `admin`
 
 export const runtime = "nodejs";
 
@@ -51,7 +51,7 @@ type Command =
   | {
       action: "add_stock" | "remove_stock";
       product_name?: string;
-      quantity?: number;
+      quantity?: number; // interpreted as BULK quantity (bags/cartons/crates) for add/remove stock
     }
   | {
       action: "create_product";
@@ -328,11 +328,19 @@ function localExtract(text: string): Command[] {
    DB helpers
 -----------------------------*/
 
+type ProductRow = {
+  id: string;
+  name: string;
+  reorder_threshold: number | null;
+  cost_price: number | null; // cost per BULK package
+  units_per_bulk: number | null; // selling units per bulk package
+};
+
 async function findProduct(workspace_id: string, product_name: string) {
   const q = `%${product_name}%`;
   const { data, error } = await admin
     .from("products")
-    .select("id, name, reorder_threshold, cost_price")
+    .select("id, name, reorder_threshold, cost_price, units_per_bulk")
     .eq("workspace_id", workspace_id)
     .ilike("name", q)
     .order("name", { ascending: true })
@@ -340,7 +348,7 @@ async function findProduct(workspace_id: string, product_name: string) {
     .maybeSingle();
 
   if (error) throw new Error(error.message);
-  return data as { id: string; name: string; reorder_threshold: number | null; cost_price: number | null } | null;
+  return (data as ProductRow | null) ?? null;
 }
 
 async function createProduct(workspace_id: string, product_name: string, reorder_threshold?: number) {
@@ -352,12 +360,20 @@ async function createProduct(workspace_id: string, product_name: string, reorder
 
   const { data, error } = await admin
     .from("products")
-    .insert([{ workspace_id, name, reorder_threshold: rt, cost_price: 0 }])
-    .select("id, name, reorder_threshold, cost_price")
+    .insert([
+      {
+        workspace_id,
+        name,
+        reorder_threshold: rt,
+        cost_price: 0,
+        units_per_bulk: 1,
+      },
+    ])
+    .select("id, name, reorder_threshold, cost_price, units_per_bulk")
     .single();
 
   if (error) throw new Error(error.message);
-  return data as { id: string; name: string; reorder_threshold: number | null; cost_price: number | null };
+  return data as ProductRow;
 }
 
 async function adjustInventory(workspace_id: string, product_id: string, delta: number) {
@@ -405,10 +421,9 @@ function todayStartISO() {
 async function runAnalytics(workspace_id: string, period: "today" | "month") {
   const start = period === "month" ? monthStartISO() : todayStartISO();
 
-  // ✅ include products(cost_price) for COGS
   const { data: sales, error: sErr } = await admin
     .from("sales")
-    .select("product_id, quantity_sold, unit_price, payment_status, created_at, products(cost_price)")
+    .select("product_id, quantity_sold, unit_price, payment_status, created_at")
     .eq("workspace_id", workspace_id)
     .gte("created_at", start);
 
@@ -438,17 +453,37 @@ async function runAnalytics(workspace_id: string, period: "today" | "month") {
     .filter((x: any) => String(x.category || "").toLowerCase() === "inventory")
     .reduce((sum: number, x: any) => sum + Number(x.amount || 0), 0);
 
-  // ✅ COGS from products.cost_price
-  const cogsTotal = (sales || []).reduce((sum: number, x: any) => {
-    const qty = Number(x.quantity_sold || 0);
-    const cost = Number(x.products?.cost_price || 0);
-    return sum + qty * cost;
+  // ✅ COGS based on product cost per BULK / units_per_bulk
+  const productIds = Array.from(new Set((sales || []).map((s: any) => s.product_id))).filter(Boolean);
+
+  const { data: prodRows, error: pErr } = await admin
+    .from("products")
+    .select("id, cost_price, units_per_bulk")
+    .eq("workspace_id", workspace_id)
+    .in("id", productIds.length ? productIds : ["00000000-0000-0000-0000-000000000000"]);
+
+  if (pErr) throw new Error(pErr.message);
+
+  const costMap = new Map<string, { cost_price: number; units_per_bulk: number }>();
+  (prodRows || []).forEach((p: any) => {
+    costMap.set(String(p.id), {
+      cost_price: Number(p.cost_price ?? 0),
+      units_per_bulk: Math.max(1, Number(p.units_per_bulk ?? 1)),
+    });
+  });
+
+  const cogsTotal = (sales || []).reduce((sum: number, s: any) => {
+    const qty = Number(s.quantity_sold || 0); // qty sold in SELLING UNITS
+    const meta = costMap.get(String(s.product_id));
+    if (!meta) return sum;
+    const unitCost = meta.cost_price / meta.units_per_bulk;
+    return sum + qty * unitCost;
   }, 0);
 
   const profitAfterInventoryPurchases = revenueTotal - expensesTotal;
   const profitWithoutInventoryPurchases = revenueTotal - (expensesTotal - inventoryPurchases);
 
-  // ✅ True profit including cost of goods sold
+  // ✅ True profit including cost of goods sold (COGS)
   const profitAfterCOGS = revenueTotal - expensesTotal - cogsTotal;
 
   return {
@@ -631,11 +666,17 @@ export async function POST(req: Request) {
 
         const json = await res.json().catch(() => ({}));
         if (!res.ok || json?.ok === false) {
-          results.push(`• ${action === "create_invoice" ? "Invoice" : "Receipt"} failed: ${json?.error || `(${res.status})`}`);
+          results.push(
+            `• ${action === "create_invoice" ? "Invoice" : "Receipt"} failed: ${json?.error || `(${res.status})`}`
+          );
           continue;
         }
 
-        results.push(`• ${action === "create_invoice" ? "Invoice" : "Receipt"} created ✅ (#${json.docNo}) total: $${Number(json.total || 0).toFixed(2)}`);
+        results.push(
+          `• ${action === "create_invoice" ? "Invoice" : "Receipt"} created ✅ (#${json.docNo}) total: $${Number(
+            json.total || 0
+          ).toFixed(2)}`
+        );
         if (json.sent) results.push(`• Sent ✅ to ${to}`);
         continue;
       }
@@ -685,7 +726,9 @@ export async function POST(req: Request) {
           continue;
         }
 
-        const { error: expErr } = await admin.from("expenses").insert([{ workspace_id, name: expense_name, amount, category }]);
+        const { error: expErr } = await admin
+          .from("expenses")
+          .insert([{ workspace_id, name: expense_name, amount, category }]);
         if (expErr) throw new Error(expErr.message);
 
         results.push(`• Expense ✅ ${expense_name}: $${amount.toFixed(2)}`);
@@ -705,7 +748,7 @@ export async function POST(req: Request) {
         results.push(`• Product auto-created ✅ ${prod.name}`);
       }
 
-      // SALE
+      // SALE (quantity is SELLING UNITS)
       if (action === "record_sale") {
         const quantity = asNumber((cmd as any)?.quantity);
         const unit_price = Number.isFinite(asNumber((cmd as any)?.unit_price)) ? asNumber((cmd as any)?.unit_price) : 0;
@@ -726,21 +769,24 @@ export async function POST(req: Request) {
         continue;
       }
 
-      // STOCK
+      // STOCK (quantity is BULK units; we convert to SELLING units using units_per_bulk)
       if (action === "add_stock" || action === "remove_stock") {
-        const quantity = asNumber((cmd as any)?.quantity);
-        if (!Number.isFinite(quantity) || quantity <= 0) {
+        const bulkQty = asNumber((cmd as any)?.quantity);
+        if (!Number.isFinite(bulkQty) || bulkQty <= 0) {
           results.push("• Stock skipped: invalid quantity");
           continue;
         }
 
-        const delta = action === "add_stock" ? quantity : -quantity;
+        const unitsPerBulk = Math.max(1, Number(prod.units_per_bulk ?? 1));
+        const sellingUnits = bulkQty * unitsPerBulk;
+
+        const delta = action === "add_stock" ? sellingUnits : -sellingUnits;
         const newQty = await adjustInventory(workspace_id, prod.id, delta);
 
         results.push(
           action === "add_stock"
-            ? `• Stock ✅ added ${quantity} ${prod.name} (stock: ${newQty})`
-            : `• Stock ✅ removed ${quantity} ${prod.name} (stock: ${newQty})`
+            ? `• Stock ✅ added ${bulkQty} bulk (${sellingUnits} units) of ${prod.name} (stock: ${newQty})`
+            : `• Stock ✅ removed ${bulkQty} bulk (${sellingUnits} units) of ${prod.name} (stock: ${newQty})`
         );
         continue;
       }
@@ -760,14 +806,15 @@ export async function POST(req: Request) {
         "expenses this month",
         "email customer@domain.com subject: ... message: ...",
         "create invoice for customer@domain.com for 2 rice at $4 each",
+        // Bulk stocking examples:
+        "I bought 2 cartons of Indomie",
+        "Add stock 3 bags of rice",
       ],
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "Unknown error" }, { status: 500 });
   }
 }
-
-
 
 
 

@@ -37,6 +37,10 @@ function toNumber(v: any, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+// IMPORTANT:
+// Your unique index is: (workspace_id, lower(name))
+// Supabase "onConflict" expects COLUMN NAMES, not expressions.
+// So we upsert on "workspace_id,name". That works with your unique index in practice.
 export default function ImportProductsPage() {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
 
@@ -64,6 +68,7 @@ export default function ImportProductsPage() {
         "purchase_price",
         "purchase_unit_cost",
         "unit_cost",
+        "unitcost",
       ]);
 
       const name = String(nameRaw ?? "").trim();
@@ -111,6 +116,7 @@ export default function ImportProductsPage() {
     Papa.parse<ParsedRow>(file, {
       header: true,
       skipEmptyLines: true,
+      // keep original header text; we normalize via pickField()
       transformHeader: (h) => String(h || "").trim(),
       complete: (results) => normalize(results.data || []),
       error: (err) => alert("CSV parse error: " + err.message),
@@ -132,8 +138,6 @@ export default function ImportProductsPage() {
     setImporting(true);
 
     try {
-      // ✅ Upsert by unique index (workspace_id, lower(name))
-      // This prevents duplicates and "missing name row" confusion due to repeats.
       const payload = rows.map((r) => ({
         workspace_id: workspaceId,
         name: r.name,
@@ -141,11 +145,21 @@ export default function ImportProductsPage() {
         cost_price: r.cost_price,
       }));
 
-      const { error } = await supabase
-        .from("products")
-        .upsert(payload, { onConflict: "workspace_id,name" });
+      // safer for big files (avoid request size/timeouts)
+      const CHUNK = 200;
 
-      if (error) throw new Error(error.message);
+      for (let i = 0; i < payload.length; i += CHUNK) {
+        const chunk = payload.slice(i, i + CHUNK);
+
+        const { error } = await supabase
+          .from("products")
+          .upsert(chunk, {
+            onConflict: "workspace_id,name",
+            ignoreDuplicates: false,
+          });
+
+        if (error) throw new Error(error.message);
+      }
 
       window.dispatchEvent(new Event("adora:refresh"));
       alert(`Imported ${rows.length} products ✅`);
@@ -182,8 +196,10 @@ export default function ImportProductsPage() {
       <div style={{ padding: 16, maxWidth: 980, margin: "0 auto" }}>
         <h1 style={{ margin: 0, fontSize: 28 }}>Import Products (CSV)</h1>
         <p style={{ marginTop: 8, color: "#5B6475" }}>
-          Headers supported: <b>name</b>, <b>reorder_threshold</b>, <b>cost_price</b>
-          (also accepts reorder/reorder_level and cost/costprice/purchase_price/purchase_unit_cost).
+          Supported headers (flexible): <b>name</b>, <b>reorder_threshold</b>, <b>cost_price</b>.
+          <br />
+          Cost also accepts: <b>cost</b>, <b>costprice</b>, <b>purchase_price</b>,{" "}
+          <b>purchase_unit_cost</b>, <b>unit_cost</b>.
         </p>
 
         <div style={box}>
