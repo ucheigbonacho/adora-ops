@@ -27,8 +27,8 @@ export default function TopNav() {
       <NavLink href="/sales" label="Sales" />
       <NavLink href="/expenses" label="Expenses" />
 
-      {/* ✅ NEW IMPORT LINK */}
-      <NavLink href="/import" label="Import" />
+      {/* ✅ SINGLE SMART IMPORT */}
+      <NavLink href="/import-smart" label="Import" />
 
       <NavLink href="/pricing" label="Pricing" highlight />
       <NavLink href="/billing" label="Billing" />
@@ -48,7 +48,7 @@ export default function TopNav() {
       </Link>
 
       {/* Desktop Nav */}
-      <nav data-desktop-nav="1" style={desktopNav()}>
+      <nav style={desktopNav()}>
         {links}
       </nav>
 
@@ -62,7 +62,6 @@ export default function TopNav() {
 
         {/* Mobile Burger */}
         <button
-          data-burger="1"
           onClick={() => setOpen(!open)}
           style={burger()}
           aria-label="Menu"
