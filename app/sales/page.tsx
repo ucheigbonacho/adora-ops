@@ -19,6 +19,26 @@ type SaleRow = {
   created_at: string;
 };
 
+function stripLeadingZeros(s: string) {
+  // allow decimals for price
+  const cleaned = String(s ?? "").replace(/[^\d.]/g, "");
+  if (!cleaned) return "";
+
+  const parts = cleaned.split(".");
+  const intPart = parts[0] ?? "";
+  const decPart = parts.length > 1 ? parts.slice(1).join("") : "";
+
+  const intNoZeros = intPart.replace(/^0+(?=\d)/, "");
+  if (parts.length > 1) return `${intNoZeros || "0"}.${decPart.replace(/[^\d]/g, "")}`;
+
+  return (intNoZeros || "0").replace(/[^\d]/g, "");
+}
+
+function toNumberSafe(v: string, fallback = 0) {
+  const n = Number(String(v ?? "").replace(/,/g, "").trim());
+  return Number.isFinite(n) ? n : fallback;
+}
+
 export default function SalesPage() {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
 
@@ -26,8 +46,8 @@ export default function SalesPage() {
   const [sales, setSales] = useState<SaleRow[]>([]);
 
   const [productId, setProductId] = useState("");
-  const [qty, setQty] = useState<number>(1);
-  const [unitPrice, setUnitPrice] = useState<number>(0);
+  const [qtyStr, setQtyStr] = useState("1"); // ✅ string
+  const [unitPriceStr, setUnitPriceStr] = useState("0"); // ✅ string
   const [paymentStatus, setPaymentStatus] = useState<string>("paid");
 
   const [loading, setLoading] = useState(false);
@@ -89,7 +109,6 @@ export default function SalesPage() {
     const rows = (data as Product[]) || [];
     setProducts(rows);
 
-    // auto-select first product if none selected
     if (!productId && rows.length > 0) setProductId(rows[0].id);
   }
 
@@ -98,9 +117,7 @@ export default function SalesPage() {
 
     const { data, error } = await supabase
       .from("sales")
-      .select(
-        "id, product_id, quantity_sold, unit_price, total_amount, payment_status, created_at"
-      )
+      .select("id, product_id, quantity_sold, unit_price, total_amount, payment_status, created_at")
       .eq("workspace_id", workspaceId)
       .order("created_at", { ascending: false });
 
@@ -115,7 +132,6 @@ export default function SalesPage() {
   async function sendLowStockAlertIfNeeded(productId: string) {
     if (!workspaceId) return;
 
-    // Get product reorder level (scoped to workspace)
     const { data: prod, error: prodErr } = await supabase
       .from("products")
       .select("name, reorder_threshold")
@@ -128,7 +144,6 @@ export default function SalesPage() {
       return;
     }
 
-    // Get current on-hand (MUST include workspace_id)
     const { data: bal, error: balErr } = await supabase
       .from("inventory_balances")
       .select("quantity_on_hand")
@@ -145,13 +160,6 @@ export default function SalesPage() {
     const reorder = Number(prod?.reorder_threshold ?? 0);
 
     if (onHand <= reorder) {
-      console.log("LOW STOCK TRIGGERING MAKE...", {
-        productId,
-        productName: prod.name,
-        onHand,
-        reorder: prod.reorder_threshold,
-      });
-
       const res = await fetch("/api/make", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -174,15 +182,14 @@ export default function SalesPage() {
       alert("Select a product");
       return;
     }
-    if (!qty || qty <= 0) {
-      alert("Quantity must be at least 1");
-      return;
-    }
+
+    const qty = Math.max(1, Math.floor(toNumberSafe(qtyStr, 1)));
+    const unitPrice = Math.max(0, toNumberSafe(unitPriceStr, 0));
 
     setLoading(true);
 
     try {
-      const totalAmount = Number(unitPrice || 0) * Number(qty || 0);
+      const totalAmount = unitPrice * qty;
 
       // 1) Insert sale record
       const { error: saleErr } = await supabase.from("sales").insert([
@@ -198,7 +205,7 @@ export default function SalesPage() {
 
       if (saleErr) throw new Error("Failed to record sale: " + saleErr.message);
 
-      // 2) Update inventory balance (deduct) — MUST scope by workspace_id
+      // 2) Update inventory balance (deduct) — scope by workspace_id
       const { data: balRow, error: balErr } = await supabase
         .from("inventory_balances")
         .select("quantity_on_hand")
@@ -206,9 +213,7 @@ export default function SalesPage() {
         .eq("product_id", productId)
         .maybeSingle();
 
-      if (balErr) {
-        throw new Error("Sale saved, but failed reading inventory: " + balErr.message);
-      }
+      if (balErr) throw new Error("Sale saved, but failed reading inventory: " + balErr.message);
 
       const currentOnHand = Number(balRow?.quantity_on_hand ?? 0);
       const newOnHand = currentOnHand - qty;
@@ -220,22 +225,13 @@ export default function SalesPage() {
           .eq("workspace_id", workspaceId)
           .eq("product_id", productId);
 
-        if (updErr) {
-          throw new Error("Sale saved, but failed updating inventory: " + updErr.message);
-        }
+        if (updErr) throw new Error("Sale saved, but failed updating inventory: " + updErr.message);
       } else {
-        // If no balance row exists yet, create one (can be negative)
         const { error: insErr } = await supabase.from("inventory_balances").insert([
-          {
-            workspace_id: workspaceId, // ✅ FIX: include workspace_id
-            product_id: productId,
-            quantity_on_hand: newOnHand,
-          },
+          { workspace_id: workspaceId, product_id: productId, quantity_on_hand: newOnHand },
         ]);
 
-        if (insErr) {
-          throw new Error("Sale saved, but failed creating inventory balance: " + insErr.message);
-        }
+        if (insErr) throw new Error("Sale saved, but failed creating inventory: " + insErr.message);
       }
 
       // 3) Log inventory movement (optional)
@@ -248,17 +244,12 @@ export default function SalesPage() {
         },
       ]);
 
-      if (moveErr) {
-        // Non-blocking
-        console.warn("Movement insert failed:", moveErr.message);
-      }
+      if (moveErr) console.warn("Movement insert failed:", moveErr.message);
 
       await loadSales();
       await sendLowStockAlertIfNeeded(productId);
 
-      // Let other pages refresh (inventory page listens to this)
       window.dispatchEvent(new Event("adora:refresh"));
-
       alert("Sale recorded successfully ✅");
     } catch (e: any) {
       alert(e?.message || "Failed to record sale.");
@@ -298,11 +289,7 @@ export default function SalesPage() {
         >
           <label style={{ fontWeight: 800 }}>
             Product
-            <select
-              value={productId}
-              onChange={(e) => setProductId(e.target.value)}
-              style={selectStyle}
-            >
+            <select value={productId} onChange={(e) => setProductId(e.target.value)} style={selectStyle}>
               {products.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
@@ -314,10 +301,10 @@ export default function SalesPage() {
           <label style={{ fontWeight: 800 }}>
             Quantity sold
             <input
-              type="number"
-              value={qty}
-              min={1}
-              onChange={(e) => setQty(Number(e.target.value))}
+              type="text"
+              inputMode="numeric"
+              value={qtyStr}
+              onChange={(e) => setQtyStr(stripLeadingZeros(e.target.value))}
               style={inputStyle}
             />
           </label>
@@ -325,21 +312,17 @@ export default function SalesPage() {
           <label style={{ fontWeight: 800 }}>
             Unit price
             <input
-              type="number"
-              value={unitPrice}
-              min={0}
-              onChange={(e) => setUnitPrice(Number(e.target.value))}
+              type="text"
+              inputMode="decimal"
+              value={unitPriceStr}
+              onChange={(e) => setUnitPriceStr(stripLeadingZeros(e.target.value))}
               style={inputStyle}
             />
           </label>
 
           <label style={{ fontWeight: 800 }}>
             Payment status
-            <select
-              value={paymentStatus}
-              onChange={(e) => setPaymentStatus(e.target.value)}
-              style={selectStyle}
-            >
+            <select value={paymentStatus} onChange={(e) => setPaymentStatus(e.target.value)} style={selectStyle}>
               <option value="paid">paid</option>
               <option value="unpaid">unpaid</option>
               <option value="partial">partial</option>
@@ -375,9 +358,7 @@ export default function SalesPage() {
                 <div>Unit price: {s.unit_price ?? 0}</div>
                 <div>Total: {s.total_amount ?? 0}</div>
                 <div>Status: {s.payment_status ?? "—"}</div>
-                <small style={{ color: "#5B6475" }}>
-                  {new Date(s.created_at).toLocaleString()}
-                </small>
+                <small style={{ color: "#5B6475" }}>{new Date(s.created_at).toLocaleString()}</small>
               </div>
             ))}
           </div>
@@ -386,4 +367,3 @@ export default function SalesPage() {
     </AuthGate>
   );
 }
-
