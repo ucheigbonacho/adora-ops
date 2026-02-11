@@ -1,10 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
+type NavItem = { href: string; label: string; highlight?: boolean };
+
 export default function TopNav() {
+  const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState<string | null>(null);
 
@@ -14,176 +18,259 @@ export default function TopNav() {
     });
   }, []);
 
+  // Close menu on route change
+  useEffect(() => {
+    setOpen(false);
+  }, [pathname]);
+
   async function logout() {
     await supabase.auth.signOut();
     window.location.href = "/login";
   }
 
-  const links = (
-    <>
-      <NavLink href="/dashboard" label="Dashboard" />
-      <NavLink href="/products" label="Products" />
-      <NavLink href="/inventory" label="Inventory" />
-      <NavLink href="/sales" label="Sales" />
-      <NavLink href="/expenses" label="Expenses" />
-
-      {/* ✅ SINGLE SMART IMPORT */}
-      <NavLink href="/import-smart" label="Import" />
-
-      <NavLink href="/pricing" label="Pricing" highlight />
-      <NavLink href="/billing" label="Billing" />
-    </>
+  const links: NavItem[] = useMemo(
+    () => [
+      { href: "/dashboard", label: "Dashboard" },
+      { href: "/products", label: "Products" },
+      { href: "/inventory", label: "Inventory" },
+      { href: "/sales", label: "Sales" },
+      { href: "/expenses", label: "Expenses" },
+      { href: "/import-smart", label: "Import" },
+      { href: "/pricing", label: "Pricing", highlight: true },
+      { href: "/billing", label: "Billing" },
+    ],
+    []
   );
 
   return (
-    <header style={header()}>
-      {/* Left: Logo + Name */}
-      <Link href="/" style={brand()}>
-        <img
-          src="/adora-logo.png"
-          alt="Adora Logo"
-          style={{ height: 34, width: "auto" }}
-        />
-        <span style={{ fontWeight: 900, fontSize: 18 }}>Adora Ops</span>
-      </Link>
+    <header className="nav">
+      <div className="inner">
+        <Link href="/" className="brand" aria-label="Go to homepage">
+          <img src="/adora-logo.png" alt="Adora Ops" className="logo" />
+          <span className="brandText">Adora Ops</span>
+        </Link>
 
-      {/* Desktop Nav */}
-      <nav style={desktopNav()}>
-        {links}
-      </nav>
+        <nav className="desktopNav" aria-label="Primary">
+          {links.map((l) => (
+            <NavLink key={l.href} item={l} active={pathname === l.href} />
+          ))}
+        </nav>
 
-      {/* Right side */}
-      <div style={right()}>
-        {email && <span style={emailStyle()}>{email}</span>}
+        <div className="right">
+          {email ? <span className="email">{email}</span> : null}
 
-        <button onClick={logout} style={logoutBtn()}>
-          Logout
-        </button>
+          <button className="btn ghost" onClick={logout}>
+            Logout
+          </button>
 
-        {/* Mobile Burger */}
-        <button
-          onClick={() => setOpen(!open)}
-          style={burger()}
-          aria-label="Menu"
-        >
-          ☰
-        </button>
+          <button
+            className="btn burger"
+            onClick={() => setOpen((v) => !v)}
+            aria-label="Open menu"
+            aria-expanded={open}
+          >
+            <span className="burgerIcon" aria-hidden="true">
+              ☰
+            </span>
+          </button>
+        </div>
       </div>
 
-      {/* Mobile Dropdown */}
-      {open && <div style={mobileMenu()}>{links}</div>}
+      {open ? (
+        <div className="mobilePanel" role="dialog" aria-label="Mobile menu">
+          <div className="mobileLinks">
+            {links.map((l) => (
+              <NavLink key={l.href} item={l} active={pathname === l.href} mobile />
+            ))}
+          </div>
+
+          <div className="mobileActions">
+            <button className="btn full" onClick={logout}>
+              Logout
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      <style jsx>{`
+        .nav {
+          position: sticky;
+          top: 0;
+          z-index: 1000;
+          background: rgba(255, 255, 255, 0.9);
+          backdrop-filter: blur(10px);
+          border-bottom: 1px solid #e6e8ee;
+        }
+        .inner {
+          max-width: 1120px;
+          margin: 0 auto;
+          padding: 12px 16px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+        }
+        .brand {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          text-decoration: none;
+          color: #0b1220;
+        }
+        .logo {
+          width: 34px;
+          height: 34px;
+          border-radius: 10px;
+          object-fit: contain;
+        }
+        .brandText {
+          font-weight: 900;
+          font-size: 16px;
+          letter-spacing: -0.02em;
+        }
+
+        .desktopNav {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          padding: 6px;
+          border-radius: 14px;
+          border: 1px solid #e6e8ee;
+          background: #fff;
+          box-shadow: 0 10px 26px rgba(0, 0, 0, 0.06);
+        }
+
+        .right {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+        .email {
+          font-size: 12px;
+          color: #5b6475;
+          max-width: 220px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .btn {
+          border: 1px solid #e6e8ee;
+          background: #fff;
+          padding: 10px 12px;
+          border-radius: 12px;
+          font-weight: 900;
+          cursor: pointer;
+          color: #0b1220;
+        }
+        .btn:hover {
+          background: #f7f8fb;
+        }
+        .btn.ghost {
+          display: inline-flex;
+        }
+
+        .btn.burger {
+          display: none;
+          border: 1px solid #e6e8ee;
+        }
+        .burgerIcon {
+          font-size: 18px;
+          line-height: 1;
+        }
+
+        .mobilePanel {
+          max-width: 1120px;
+          margin: 0 auto;
+          padding: 0 16px 14px;
+        }
+        .mobileLinks {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          padding: 12px;
+          border: 1px solid #e6e8ee;
+          border-radius: 16px;
+          background: #fff;
+          box-shadow: 0 10px 26px rgba(0, 0, 0, 0.06);
+        }
+        .mobileActions {
+          margin-top: 10px;
+        }
+        .btn.full {
+          width: 100%;
+          padding: 12px 14px;
+          border-radius: 14px;
+        }
+
+        /* Responsive */
+        @media (max-width: 920px) {
+          .desktopNav {
+            display: none;
+          }
+          .email {
+            display: none;
+          }
+          .btn.burger {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+          }
+        }
+      `}</style>
     </header>
   );
 }
 
 function NavLink({
-  href,
-  label,
-  highlight,
+  item,
+  active,
+  mobile,
 }: {
-  href: string;
-  label: string;
-  highlight?: boolean;
+  item: { href: string; label: string; highlight?: boolean };
+  active?: boolean;
+  mobile?: boolean;
 }) {
   return (
-    <Link
-      href={href}
-      style={{
-        padding: "8px 12px",
-        borderRadius: 10,
-        fontWeight: 700,
-        textDecoration: "none",
-        color: highlight ? "#1F6FEB" : "#0B1220",
-        background: highlight ? "#E9F2FF" : "transparent",
-      }}
-    >
-      {label}
-    </Link>
+    <>
+      <Link
+        href={item.href}
+        className={[
+          "link",
+          item.highlight ? "highlight" : "",
+          active ? "active" : "",
+          mobile ? "mobile" : "",
+        ].join(" ")}
+      >
+        {item.label}
+      </Link>
+
+      <style jsx>{`
+        .link {
+          padding: 9px 12px;
+          border-radius: 12px;
+          font-weight: 900;
+          text-decoration: none;
+          color: #0b1220;
+          border: 1px solid transparent;
+        }
+        .link:hover {
+          background: #f7f8fb;
+        }
+        .active {
+          border-color: #e6e8ee;
+          background: #fff;
+        }
+        .highlight {
+          color: #1f6feb;
+          background: #e9f2ff;
+          border-color: #d6e8ff;
+        }
+        .mobile {
+          border: 1px solid #e6e8ee;
+          background: #fff;
+        }
+      `}</style>
+    </>
   );
 }
-
-/* ---------------- STYLES ---------------- */
-
-function header(): React.CSSProperties {
-  return {
-    position: "sticky",
-    top: 0,
-    zIndex: 1000,
-    background: "#fff",
-    borderBottom: "1px solid #E6E8EE",
-    padding: "10px 16px",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    flexWrap: "wrap",
-  };
-}
-
-function brand(): React.CSSProperties {
-  return {
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    textDecoration: "none",
-    color: "#0B1220",
-  };
-}
-
-function desktopNav(): React.CSSProperties {
-  return {
-    display: "flex",
-    gap: 8,
-    alignItems: "center",
-  };
-}
-
-function right(): React.CSSProperties {
-  return {
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-  };
-}
-
-function emailStyle(): React.CSSProperties {
-  return {
-    fontSize: 12,
-    color: "#5B6475",
-    display: "none",
-  };
-}
-
-function logoutBtn(): React.CSSProperties {
-  return {
-    padding: "6px 10px",
-    borderRadius: 10,
-    border: "1px solid #E6E8EE",
-    background: "#fff",
-    fontWeight: 700,
-    cursor: "pointer",
-  };
-}
-
-function burger(): React.CSSProperties {
-  return {
-    display: "none",
-    padding: "6px 10px",
-    borderRadius: 10,
-    border: "1px solid #E6E8EE",
-    background: "#fff",
-    fontWeight: 900,
-    cursor: "pointer",
-    fontSize: 18,
-  };
-}
-
-function mobileMenu(): React.CSSProperties {
-  return {
-    width: "100%",
-    marginTop: 10,
-    display: "flex",
-    flexDirection: "column",
-    gap: 6,
-  };
-}
-
