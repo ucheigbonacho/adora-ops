@@ -5,20 +5,34 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
-type NavItem = { href: string; label: string; highlight?: boolean };
-
 export default function TopNav() {
   const pathname = usePathname();
+
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState<string | null>(null);
+  const isAuthed = !!email;
 
   useEffect(() => {
+    let alive = true;
+
+    // initial user
     supabase.auth.getUser().then(({ data }) => {
+      if (!alive) return;
       setEmail(data.user?.email ?? null);
     });
+
+    // react to login/logout
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setEmail(session?.user?.email ?? null);
+    });
+
+    return () => {
+      alive = false;
+      sub?.subscription?.unsubscribe();
+    };
   }, []);
 
-  // Close menu on route change
+  // close mobile dropdown on route change
   useEffect(() => {
     setOpen(false);
   }, [pathname]);
@@ -28,249 +42,354 @@ export default function TopNav() {
     window.location.href = "/login";
   }
 
-  const links: NavItem[] = useMemo(
-    () => [
-      { href: "/dashboard", label: "Dashboard" },
-      { href: "/products", label: "Products" },
-      { href: "/inventory", label: "Inventory" },
-      { href: "/sales", label: "Sales" },
-      { href: "/expenses", label: "Expenses" },
-      { href: "/import-smart", label: "Import" },
-      { href: "/pricing", label: "Pricing", highlight: true },
-      { href: "/billing", label: "Billing" },
-    ],
-    []
+  // ✅ Keep your current app links (same as you posted)
+  const appLinks = useMemo(
+    () => (
+      <>
+        <NavLink href="/dashboard" label="Dashboard" active={pathname === "/dashboard"} />
+        <NavLink href="/products" label="Products" active={pathname === "/products"} />
+        <NavLink href="/inventory" label="Inventory" active={pathname === "/inventory"} />
+        <NavLink href="/sales" label="Sales" active={pathname === "/sales"} />
+        <NavLink href="/expenses" label="Expenses" active={pathname === "/expenses"} />
+        <NavLink href="/import-smart" label="Import" />
+
+
+        {/* Pricing as a button-style link */}
+        <NavButton href="/pricing" label="Pricing" active={pathname === "/pricing"} />
+
+        <NavLink href="/billing" label="Billing" active={pathname === "/billing"} />
+      </>
+    ),
+    [pathname]
   );
 
   return (
-    <header className="nav">
-      <div className="inner">
-        <Link href="/" className="brand" aria-label="Go to homepage">
-          <img src="/adora-logo.png" alt="Adora Ops" className="logo" />
-          <span className="brandText">Adora Ops</span>
+    <header style={header()}>
+      <div style={inner()}>
+        {/* Brand */}
+        <Link href="/" style={brand()}>
+          <img
+            src="/adora-logo.png"
+            alt="Adora Ops"
+            style={{
+              height: 42,
+              width: 42,
+              borderRadius: 12,
+              objectFit: "contain",
+              background: "white",
+              border: "1px solid rgba(49,66,87,0.12)",
+              padding: 6,
+            }}
+          />
+          <span style={{ fontWeight: 950, fontSize: 20, letterSpacing: "-0.02em" }}>
+            AdoraOps
+          </span>
         </Link>
 
-        <nav className="desktopNav" aria-label="Primary">
-          {links.map((l) => (
-            <NavLink key={l.href} item={l} active={pathname === l.href} />
-          ))}
-        </nav>
+        {/* Desktop Nav */}
+        <nav style={desktopNav()}>{appLinks}</nav>
 
-        <div className="right">
-          {email ? <span className="email">{email}</span> : null}
+        {/* Right side */}
+        <div style={right()}>
+          {/* Only show email+logout when logged in */}
+          {isAuthed ? (
+            <>
+              <span style={emailStyle()} title={email ?? ""}>
+                {email}
+              </span>
+              <button onClick={logout} style={ghostBtn()}>
+                Logout
+              </button>
+            </>
+          ) : (
+            <>
+              <Link href="/login" style={ghostLink()}>
+                Log In
+              </Link>
+              <Link href="/login" style={primaryBtn()}>
+                Get Started <span style={{ fontSize: 18, marginLeft: 6 }}>›</span>
+              </Link>
+            </>
+          )}
 
-          <button className="btn ghost" onClick={logout}>
-            Logout
-          </button>
-
+          {/* Mobile burger */}
           <button
-            className="btn burger"
-            onClick={() => setOpen((v) => !v)}
-            aria-label="Open menu"
-            aria-expanded={open}
+            onClick={() => setOpen(!open)}
+            style={burger()}
+            aria-label="Menu"
+            title="Menu"
           >
-            <span className="burgerIcon" aria-hidden="true">
-              ☰
-            </span>
+            ☰
           </button>
         </div>
       </div>
 
-      {open ? (
-        <div className="mobilePanel" role="dialog" aria-label="Mobile menu">
-          <div className="mobileLinks">
-            {links.map((l) => (
-              <NavLink key={l.href} item={l} active={pathname === l.href} mobile />
-            ))}
-          </div>
-
-          <div className="mobileActions">
-            <button className="btn full" onClick={logout}>
-              Logout
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      <style jsx>{`
-        .nav {
-          position: sticky;
-          top: 0;
-          z-index: 1000;
-          background: rgba(255, 255, 255, 0.9);
-          backdrop-filter: blur(10px);
-          border-bottom: 1px solid #e6e8ee;
-        }
-        .inner {
-          max-width: 1120px;
-          margin: 0 auto;
-          padding: 12px 16px;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 12px;
-        }
-        .brand {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          text-decoration: none;
-          color: #0b1220;
-        }
-        .logo {
-          width: 34px;
-          height: 34px;
-          border-radius: 10px;
-          object-fit: contain;
-        }
-        .brandText {
-          font-weight: 900;
-          font-size: 16px;
-          letter-spacing: -0.02em;
-        }
-
-        .desktopNav {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          padding: 6px;
-          border-radius: 14px;
-          border: 1px solid #e6e8ee;
-          background: #fff;
-          box-shadow: 0 10px 26px rgba(0, 0, 0, 0.06);
-        }
-
-        .right {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-        }
-        .email {
-          font-size: 12px;
-          color: #5b6475;
-          max-width: 220px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-
-        .btn {
-          border: 1px solid #e6e8ee;
-          background: #fff;
-          padding: 10px 12px;
-          border-radius: 12px;
-          font-weight: 900;
-          cursor: pointer;
-          color: #0b1220;
-        }
-        .btn:hover {
-          background: #f7f8fb;
-        }
-        .btn.ghost {
-          display: inline-flex;
-        }
-
-        .btn.burger {
-          display: none;
-          border: 1px solid #e6e8ee;
-        }
-        .burgerIcon {
-          font-size: 18px;
-          line-height: 1;
-        }
-
-        .mobilePanel {
-          max-width: 1120px;
-          margin: 0 auto;
-          padding: 0 16px 14px;
-        }
-        .mobileLinks {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-          padding: 12px;
-          border: 1px solid #e6e8ee;
-          border-radius: 16px;
-          background: #fff;
-          box-shadow: 0 10px 26px rgba(0, 0, 0, 0.06);
-        }
-        .mobileActions {
-          margin-top: 10px;
-        }
-        .btn.full {
-          width: 100%;
-          padding: 12px 14px;
-          border-radius: 14px;
-        }
-
-        /* Responsive */
-        @media (max-width: 920px) {
-          .desktopNav {
-            display: none;
-          }
-          .email {
-            display: none;
-          }
-          .btn.burger {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-          }
-        }
-      `}</style>
+      {/* Mobile Dropdown */}
+      {open ? <div style={mobileMenu()}>{appLinks}{mobileAuthRow(isAuthed, email, logout)}</div> : null}
     </header>
   );
 }
 
+/* ---------------- Components ---------------- */
+
 function NavLink({
-  item,
+  href,
+  label,
   active,
-  mobile,
 }: {
-  item: { href: string; label: string; highlight?: boolean };
+  href: string;
+  label: string;
   active?: boolean;
-  mobile?: boolean;
 }) {
   return (
-    <>
-      <Link
-        href={item.href}
-        className={[
-          "link",
-          item.highlight ? "highlight" : "",
-          active ? "active" : "",
-          mobile ? "mobile" : "",
-        ].join(" ")}
-      >
-        {item.label}
-      </Link>
-
-      <style jsx>{`
-        .link {
-          padding: 9px 12px;
-          border-radius: 12px;
-          font-weight: 900;
-          text-decoration: none;
-          color: #0b1220;
-          border: 1px solid transparent;
-        }
-        .link:hover {
-          background: #f7f8fb;
-        }
-        .active {
-          border-color: #e6e8ee;
-          background: #fff;
-        }
-        .highlight {
-          color: #1f6feb;
-          background: #e9f2ff;
-          border-color: #d6e8ff;
-        }
-        .mobile {
-          border: 1px solid #e6e8ee;
-          background: #fff;
-        }
-      `}</style>
-    </>
+    <Link
+      href={href}
+      style={{
+        padding: "10px 12px",
+        borderRadius: 14,
+        fontWeight: 800,
+        textDecoration: "none",
+        color: "#314257",
+        background: active ? "rgba(49,66,87,0.10)" : "transparent",
+        border: active ? "1px solid rgba(49,66,87,0.12)" : "1px solid transparent",
+        transition: "transform 120ms ease, background 120ms ease",
+      }}
+      onMouseEnter={(e) => {
+        (e.currentTarget as any).style.background = "rgba(49,66,87,0.08)";
+        (e.currentTarget as any).style.transform = "translateY(-1px)";
+      }}
+      onMouseLeave={(e) => {
+        (e.currentTarget as any).style.background = active
+          ? "rgba(49,66,87,0.10)"
+          : "transparent";
+        (e.currentTarget as any).style.transform = "translateY(0px)";
+      }}
+    >
+      {label}
+    </Link>
   );
+}
+
+function NavButton({
+  href,
+  label,
+  active,
+}: {
+  href: string;
+  label: string;
+  active?: boolean;
+}) {
+  return (
+    <Link
+      href={href}
+      style={{
+        padding: "10px 14px",
+        borderRadius: 14,
+        fontWeight: 950,
+        textDecoration: "none",
+        color: "#fff",
+        background: active ? "#1A5FE0" : "#1F6FEB",
+        border: "1px solid rgba(31,111,235,0.35)",
+        boxShadow: "0 10px 22px rgba(31,111,235,0.22)",
+        transition: "transform 120ms ease, filter 120ms ease",
+        whiteSpace: "nowrap",
+      }}
+      onMouseEnter={(e) => {
+        (e.currentTarget as any).style.transform = "translateY(-1px)";
+        (e.currentTarget as any).style.filter = "brightness(1.03)";
+      }}
+      onMouseLeave={(e) => {
+        (e.currentTarget as any).style.transform = "translateY(0px)";
+        (e.currentTarget as any).style.filter = "none";
+      }}
+    >
+      {label}
+    </Link>
+  );
+}
+
+function mobileAuthRow(
+  isAuthed: boolean,
+  email: string | null,
+  logout: () => Promise<void>
+) {
+  return (
+    <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+      {isAuthed ? (
+        <>
+          <div style={{ fontSize: 12, color: "#4b5b70", fontWeight: 700 }}>
+            Signed in as <b>{email}</b>
+          </div>
+          <button onClick={logout} style={ghostBtn(true)}>
+            Logout
+          </button>
+        </>
+      ) : (
+        <>
+          <Link href="/login" style={ghostLink(true)}>
+            Log In
+          </Link>
+          <Link href="/login" style={primaryBtn(true)}>
+            Get Started <span style={{ fontSize: 18, marginLeft: 6 }}>›</span>
+          </Link>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Styles ---------------- */
+
+function header(): React.CSSProperties {
+  return {
+    position: "sticky",
+    top: 0,
+    zIndex: 1000,
+    background: "rgba(242, 240, 234, 0.88)", // matches your screenshot vibe
+    backdropFilter: "blur(10px)",
+    borderBottom: "1px solid rgba(49,66,87,0.12)",
+  };
+}
+
+function inner(): React.CSSProperties {
+  return {
+    maxWidth: 1200,
+    margin: "0 auto",
+    padding: "14px 16px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  };
+}
+
+function brand(): React.CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    textDecoration: "none",
+    color: "#314257",
+  };
+}
+
+function desktopNav(): React.CSSProperties {
+  return {
+    display: "flex",
+    gap: 8,
+    alignItems: "center",
+    flexWrap: "wrap",
+  };
+}
+
+function right(): React.CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+  };
+}
+
+function emailStyle(): React.CSSProperties {
+  return {
+    maxWidth: 220,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    fontSize: 12,
+    color: "#4b5b70",
+    fontWeight: 700,
+    padding: "8px 10px",
+    borderRadius: 12,
+    background: "rgba(255,255,255,0.6)",
+    border: "1px solid rgba(49,66,87,0.12)",
+  };
+}
+
+function ghostBtn(fullWidth = false): React.CSSProperties {
+  return {
+    width: fullWidth ? "100%" : undefined,
+    padding: "10px 12px",
+    borderRadius: 14,
+    border: "1px solid rgba(49,66,87,0.18)",
+    background: "rgba(255,255,255,0.6)",
+    color: "#314257",
+    fontWeight: 900,
+    cursor: "pointer",
+  };
+}
+
+function ghostLink(fullWidth = false): React.CSSProperties {
+  return {
+    width: fullWidth ? "100%" : undefined,
+    display: "inline-flex",
+    justifyContent: "center",
+    padding: "10px 12px",
+    borderRadius: 14,
+    border: "1px solid rgba(49,66,87,0.18)",
+    background: "rgba(255,255,255,0.6)",
+    color: "#314257",
+    fontWeight: 900,
+    textDecoration: "none",
+  };
+}
+
+function primaryBtn(fullWidth = false): React.CSSProperties {
+  return {
+    width: fullWidth ? "100%" : undefined,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "10px 14px",
+    borderRadius: 14,
+    border: "1px solid rgba(31,111,235,0.35)",
+    background: "#1F6FEB",
+    color: "#fff",
+    fontWeight: 950,
+    textDecoration: "none",
+    boxShadow: "0 10px 22px rgba(31,111,235,0.22)",
+    whiteSpace: "nowrap",
+  };
+}
+
+function burger(): React.CSSProperties {
+  return {
+    display: "none",
+    padding: "10px 12px",
+    borderRadius: 14,
+    border: "1px solid rgba(49,66,87,0.18)",
+    background: "rgba(255,255,255,0.6)",
+    fontWeight: 950,
+    cursor: "pointer",
+    fontSize: 18,
+  };
+}
+
+function mobileMenu(): React.CSSProperties {
+  return {
+    maxWidth: 1200,
+    margin: "0 auto",
+    padding: "0 16px 14px",
+    display: "none",
+    flexDirection: "column",
+    gap: 8,
+  };
+}
+
+/* ✅ Responsive rules without styled-jsx (safe in client component anyway) */
+if (typeof window !== "undefined") {
+  const injectOnce = () => {
+    if (document.getElementById("adora-topnav-css")) return;
+    const style = document.createElement("style");
+    style.id = "adora-topnav-css";
+    style.innerHTML = `
+      @media (max-width: 860px){
+        nav[data-adora-desktop="1"]{ display:none !important; }
+        button[data-adora-burger="1"]{ display:inline-flex !important; }
+        div[data-adora-mobile="1"]{ display:flex !important; }
+      }
+    `;
+    document.head.appendChild(style);
+  };
+  injectOnce();
 }

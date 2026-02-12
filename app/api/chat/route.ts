@@ -38,7 +38,7 @@ type Command =
   | {
       action: "record_sale";
       product_name?: string;
-      quantity?: number;
+      quantity?: number; // SELLING UNITS
       unit_price?: number;
       payment_status?: "paid" | "unpaid";
     }
@@ -51,7 +51,7 @@ type Command =
   | {
       action: "add_stock" | "remove_stock";
       product_name?: string;
-      quantity?: number; // interpreted as BULK quantity (bags/cartons/crates) for add/remove stock
+      quantity?: number; // BULK qty (cartons/bags/crates) for add/remove stock
     }
   | {
       action: "create_product";
@@ -115,9 +115,8 @@ function requiresPremium(action: Action) {
 }
 
 /* ----------------------------
-   Local parsing
+   Local parsing (only used when body.text is provided)
 -----------------------------*/
-
 function splitStatements(text: string) {
   return text
     .split(/\n|•/g)
@@ -183,7 +182,6 @@ function parseInvoiceOrReceiptSentence(s: string): Command | null {
     const qty = Math.max(1, Math.round(asNumber(qtyMatch[1]) || 1));
     const name = String(qtyMatch[2] || "").split(/\s+for\s+|\s+at\s+/i)[0].trim();
     const unit_price = Math.max(0, asNumber(priceMatch[1]) || 0);
-
     if (name && unit_price >= 0) items = [{ name, qty, unit_price }];
   }
 
@@ -269,7 +267,7 @@ function parseBuySentence(s: string): Command | null {
     product_name = m ? m[2].trim() : "";
   }
 
-  product_name = product_name.replace(/\b(bags?|pcs?|pieces?)\b\s*(of)?\s*/i, "").trim();
+  product_name = product_name.replace(/\b(bags?|pcs?|pieces?|cartons?|crates?)\b\s*(of)?\s*/i, "").trim();
 
   return {
     action: "add_stock",
@@ -327,7 +325,6 @@ function localExtract(text: string): Command[] {
 /* ----------------------------
    DB helpers
 -----------------------------*/
-
 type ProductRow = {
   id: string;
   name: string;
@@ -473,17 +470,13 @@ async function runAnalytics(workspace_id: string, period: "today" | "month") {
   });
 
   const cogsTotal = (sales || []).reduce((sum: number, s: any) => {
-    const qty = Number(s.quantity_sold || 0); // qty sold in SELLING UNITS
+    const qty = Number(s.quantity_sold || 0); // SELLING UNITS
     const meta = costMap.get(String(s.product_id));
     if (!meta) return sum;
     const unitCost = meta.cost_price / meta.units_per_bulk;
     return sum + qty * unitCost;
   }, 0);
 
-  const profitAfterInventoryPurchases = revenueTotal - expensesTotal;
-  const profitWithoutInventoryPurchases = revenueTotal - (expensesTotal - inventoryPurchases);
-
-  // ✅ True profit including cost of goods sold (COGS)
   const profitAfterCOGS = revenueTotal - expensesTotal - cogsTotal;
 
   return {
@@ -494,14 +487,12 @@ async function runAnalytics(workspace_id: string, period: "today" | "month") {
     expensesTotal,
     inventoryPurchases,
     cogsTotal,
-    profitAfterInventoryPurchases,
-    profitWithoutInventoryPurchases,
     profitAfterCOGS,
   };
 }
 
 /* ----------------------------
-   OpenAI extraction (optional)
+   OpenAI extraction fallback (optional)
 -----------------------------*/
 async function aiExtract(text: string): Promise<Command[]> {
   if (!openai) throw new Error("OpenAI not configured.");
@@ -524,11 +515,10 @@ create_receipt { to, items, note, send_email }
 unknown { ask }
 
 Rules:
-- "bought/purchased" => add_stock
-- "sold" => record_sale
+- "bought/purchased/received/restocked" => add_stock (quantity is bulk)
+- "sold" => record_sale (quantity is selling units)
 - default payment_status="paid"
 - analytics period: if "month" => month, else today
-- invoices/receipts: if user asks invoice/receipt/email => map to premium actions.
 `;
 
   const r = await openai.chat.completions.create({
@@ -548,33 +538,64 @@ Rules:
 }
 
 /* ----------------------------
+   NEW: normalize commands coming from /api/assistant
+-----------------------------*/
+function normalizeIncomingCommands(raw: any): Command[] {
+  const arr = Array.isArray(raw) ? raw : Array.isArray(raw?.commands) ? raw.commands : [];
+  return (arr || []).map((c: any) => ({
+    action: safeStr(c?.action) || "unknown",
+    product_name: safeStr(c?.product_name) || undefined,
+    quantity: Number.isFinite(asNumber(c?.quantity)) ? asNumber(c?.quantity) : undefined,
+    unit_price: Number.isFinite(asNumber(c?.unit_price)) ? asNumber(c?.unit_price) : undefined,
+    payment_status: c?.payment_status === "unpaid" ? "unpaid" : "paid",
+    expense_name: safeStr(c?.expense_name) || undefined,
+    amount: Number.isFinite(asNumber(c?.amount)) ? asNumber(c?.amount) : undefined,
+    category: safeStr(c?.category) || undefined,
+    ask: safeStr(c?.ask) || undefined,
+  })) as Command[];
+}
+
+/* ----------------------------
    Route
 -----------------------------*/
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
     const workspace_id = safeStr(body?.workspace_id);
+
+    // ✅ Accept either:
+    // A) { workspace_id, text }  -> parse here
+    // B) { workspace_id, commands } -> execute directly
     const text = safeStr(body?.text);
+    const hasCommands = Array.isArray(body?.commands) && body.commands.length > 0;
 
     if (!workspace_id) {
       return NextResponse.json({ ok: false, error: "Missing workspace_id." }, { status: 400 });
     }
-    if (!text) {
-      return NextResponse.json({ ok: false, error: "No message provided." }, { status: 400 });
-    }
 
     const planInfo = await getWorkspacePlan(workspace_id);
 
-    let actions: Command[] = localExtract(text);
+    let actions: Command[] = [];
 
-    const localOnlyUnknown =
-      actions.length === 1 && safeStr((actions[0] as any).action) === "unknown";
+    if (hasCommands) {
+      actions = normalizeIncomingCommands(body.commands);
+    } else {
+      if (!text) {
+        return NextResponse.json(
+          { ok: false, error: "Provide either `text` or `commands`." },
+          { status: 400 }
+        );
+      }
 
-    if (localOnlyUnknown) {
-      try {
-        actions = await aiExtract(text);
-      } catch {
-        // keep local
+      actions = localExtract(text);
+
+      const localOnlyUnknown = actions.length === 1 && safeStr((actions[0] as any).action) === "unknown";
+      if (localOnlyUnknown) {
+        try {
+          actions = await aiExtract(text);
+        } catch {
+          // keep local
+        }
       }
     }
 
@@ -594,98 +615,10 @@ export async function POST(req: Request) {
         continue;
       }
 
-      // PREMIUM: EMAIL
-      if (action === "send_email") {
-        const to = safeStr((cmd as any)?.to);
-        const subject = safeStr((cmd as any)?.subject) || "Message from Adora Ops";
-        const message = safeStr((cmd as any)?.message);
-
-        if (!to || !isEmail(to)) {
-          results.push("• Email skipped: invalid recipient email");
-          continue;
-        }
-        if (!message) {
-          results.push("• Email skipped: missing message");
-          continue;
-        }
-
-        const origin = process.env.APP_ORIGIN || "http://localhost:3000";
-        const res = await fetch(`${origin}/api/email/send`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            to,
-            subject,
-            html: `<div style="font-family:system-ui,Segoe UI,Roboto,Arial;line-height:1.5;color:#0B1220;">
-                    <p>${message.replaceAll("\n", "<br/>")}</p>
-                    <hr style="border:none;border-top:1px solid #E6E8EE;margin:16px 0;" />
-                    <p style="color:#5B6475;font-size:12px;">Sent via Adora Ops • support@adoraops.com</p>
-                  </div>`,
-            text: message,
-          }),
-        });
-
-        const json = await res.json().catch(() => ({}));
-        if (!res.ok || json?.ok === false) {
-          results.push(`• Email failed: ${json?.error || `(${res.status})`}`);
-          continue;
-        }
-
-        results.push(`• Email sent ✅ to ${to} (subject: ${subject})`);
-        continue;
-      }
-
-      // PREMIUM: INVOICE/RECEIPT
-      if (action === "create_invoice" || action === "create_receipt") {
-        const to = safeStr((cmd as any)?.to);
-        const items = Array.isArray((cmd as any)?.items) ? (cmd as any).items : [];
-        const note = safeStr((cmd as any)?.note);
-        const send_email = (cmd as any)?.send_email !== false;
-
-        if (!to || !isEmail(to)) {
-          results.push("• Invoice/receipt skipped: invalid email");
-          continue;
-        }
-        if (!items.length) {
-          results.push("• Invoice/receipt skipped: I need items like “2 rice at $4 each”.");
-          continue;
-        }
-
-        const origin = process.env.APP_ORIGIN || "http://localhost:3000";
-        const res = await fetch(`${origin}/api/invoice/create`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            kind: action === "create_invoice" ? "invoice" : "receipt",
-            to,
-            items,
-            note: note || undefined,
-            send_email,
-          }),
-        });
-
-        const json = await res.json().catch(() => ({}));
-        if (!res.ok || json?.ok === false) {
-          results.push(
-            `• ${action === "create_invoice" ? "Invoice" : "Receipt"} failed: ${json?.error || `(${res.status})`}`
-          );
-          continue;
-        }
-
-        results.push(
-          `• ${action === "create_invoice" ? "Invoice" : "Receipt"} created ✅ (#${json.docNo}) total: $${Number(
-            json.total || 0
-          ).toFixed(2)}`
-        );
-        if (json.sent) results.push(`• Sent ✅ to ${to}`);
-        continue;
-      }
-
       // ANALYTICS
       if (action === "analytics") {
         const metric = (cmd as any)?.metric || "profit";
         const period: "today" | "month" = (cmd as any)?.period === "month" ? "month" : "today";
-
         analyticsReply = await runAnalytics(workspace_id, period);
 
         if (metric === "profit") {
@@ -769,7 +702,7 @@ export async function POST(req: Request) {
         continue;
       }
 
-      // STOCK (quantity is BULK units; we convert to SELLING units using units_per_bulk)
+      // STOCK (quantity is BULK units; convert to SELLING units via units_per_bulk)
       if (action === "add_stock" || action === "remove_stock") {
         const bulkQty = asNumber((cmd as any)?.quantity);
         if (!Number.isFinite(bulkQty) || bulkQty <= 0) {
@@ -804,17 +737,12 @@ export async function POST(req: Request) {
         "profit this month",
         "revenue today",
         "expenses this month",
-        "email customer@domain.com subject: ... message: ...",
-        "create invoice for customer@domain.com for 2 rice at $4 each",
-        // Bulk stocking examples:
+        "I sold 2 rice for $4 each",
         "I bought 2 cartons of Indomie",
-        "Add stock 3 bags of rice",
       ],
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "Unknown error" }, { status: 500 });
   }
 }
-
-
 
