@@ -1,12 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { supabase } from "@/lib/supabaseClient";
 
 type NavItem = { label: string; href: string };
 
 export default function TopNav() {
   const [open, setOpen] = useState(false);
+  const [loadingAuth, setLoadingAuth] = useState(true);
+  const [isAuthed, setIsAuthed] = useState(false);
 
   // Close menu when resizing to desktop
   useEffect(() => {
@@ -17,18 +20,59 @@ export default function TopNav() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  const nav: NavItem[] = [
-    { label: "Dashboard", href: "/dashboard" },
-    { label: "Products", href: "/products" },
-    { label: "Inventory", href: "/inventory" },
-    { label: "Sales", href: "/sales" },
-    { label: "Expenses", href: "/expenses" },
-    // ✅ show "Import" but route to smart import
-    { label: "Import", href: "/import-smart" },
-    { label: "Assistant", href: "/assistant" },
-    { label: "Pricing", href: "/pricing" },
-    { label: "Billing", href: "/billing" },
-  ];
+  // ✅ Detect auth state (client)
+  useEffect(() => {
+    let mounted = true;
+
+    async function init() {
+      try {
+        const { data } = await supabase.auth.getSession();
+        if (!mounted) return;
+        setIsAuthed(!!data?.session);
+      } finally {
+        if (mounted) setLoadingAuth(false);
+      }
+    }
+
+    init();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setIsAuthed(!!session);
+    });
+
+    return () => {
+      mounted = false;
+      sub?.subscription?.unsubscribe();
+    };
+  }, []);
+
+  const nav: NavItem[] = useMemo(
+    () => [
+      { label: "Dashboard", href: "/dashboard" },
+      { label: "Products", href: "/products" },
+      { label: "Inventory", href: "/inventory" },
+      { label: "Sales", href: "/sales" },
+      { label: "Expenses", href: "/expenses" },
+      // ✅ show "Import" but route to smart import
+      { label: "Import", href: "/import-smart" },
+      { label: "Assistant", href: "/assistant" },
+      { label: "Pricing", href: "/pricing" },
+      { label: "Billing", href: "/billing" },
+    ],
+    []
+  );
+
+  async function logout() {
+    try {
+      await supabase.auth.signOut();
+      localStorage.removeItem("workspace_id"); // optional (keeps UI clean)
+      window.location.href = "/login";
+    } catch {
+      // ignore
+    }
+  }
+
+  const showAuthButtons = !loadingAuth; // avoid flicker
 
   return (
     <>
@@ -53,12 +97,33 @@ export default function TopNav() {
 
           {/* Right actions (desktop) */}
           <div className="actionsDesktop">
-            <Link className="btnGhost" href="/login">
-              Log In
-            </Link>
-            <Link className="btnPrimary" href="/login">
-              Get Started <span className="arrow">›</span>
-            </Link>
+            {showAuthButtons ? (
+              isAuthed ? (
+                <>
+                  <Link className="btnGhost" href="/dashboard">
+                    Dashboard
+                  </Link>
+                  <button className="btnPrimary" onClick={logout} type="button">
+                    Log out <span className="arrow">›</span>
+                  </button>
+                </>
+              ) : (
+                <>
+                  <Link className="btnGhost" href="/login">
+                    Log In
+                  </Link>
+                  <Link className="btnPrimary" href="/login">
+                    Get Started <span className="arrow">›</span>
+                  </Link>
+                </>
+              )
+            ) : (
+              <>
+                <div className="btnGhost" aria-hidden="true" style={{ opacity: 0.6 }}>
+                  …
+                </div>
+              </>
+            )}
           </div>
 
           {/* Mobile hamburger */}
@@ -92,12 +157,27 @@ export default function TopNav() {
             </div>
 
             <div className="mobileActions">
-              <Link className="btnGhost mobileBtn" href="/login" onClick={() => setOpen(false)}>
-                Log In
-              </Link>
-              <Link className="btnPrimary mobileBtn" href="/login" onClick={() => setOpen(false)}>
-                Get Started <span className="arrow">›</span>
-              </Link>
+              {showAuthButtons ? (
+                isAuthed ? (
+                  <>
+                    <Link className="btnGhost mobileBtn" href="/dashboard" onClick={() => setOpen(false)}>
+                      Dashboard
+                    </Link>
+                    <button className="btnPrimary mobileBtn" onClick={logout} type="button">
+                      Log out <span className="arrow">›</span>
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <Link className="btnGhost mobileBtn" href="/login" onClick={() => setOpen(false)}>
+                      Log In
+                    </Link>
+                    <Link className="btnPrimary mobileBtn" href="/login" onClick={() => setOpen(false)}>
+                      Get Started <span className="arrow">›</span>
+                    </Link>
+                  </>
+                )
+              ) : null}
             </div>
           </div>
         ) : null}
@@ -204,6 +284,7 @@ export default function TopNav() {
           border: 1px solid #e6e8ee;
           background: #fff;
           box-shadow: 0 10px 26px rgba(0, 0, 0, 0.06);
+          cursor: pointer;
         }
 
         .btnGhost:hover {

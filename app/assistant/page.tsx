@@ -30,11 +30,36 @@ export default function AssistantPage() {
   const [micError, setMicError] = useState<string | null>(null);
 
   const recognitionRef = useRef<any>(null);
-  const finalTextRef = useRef<string>("");
-  const inactivityTimerRef = useRef<any>(null);
 
-  // 3 mins hard-stop
+  // Tracks whether user intends mic to keep running (tap mic again to stop)
+  const shouldRunRef = useRef(false);
+
+  // Accumulates final transcript across results
+  const finalTextRef = useRef<string>("");
+
+  // Latest combined (final + interim) text so we can send on stop
+  const latestCombinedRef = useRef<string>("");
+
+  // Inactivity timer (3 minutes without results)
+  const inactivityTimerRef = useRef<number | null>(null);
+
+  // 3 mins inactivity stop
   const HARD_STOP_MS = 3 * 60 * 1000;
+
+  function clearInactivity() {
+    if (inactivityTimerRef.current) {
+      window.clearTimeout(inactivityTimerRef.current);
+      inactivityTimerRef.current = null;
+    }
+  }
+
+  function armInactivity() {
+    clearInactivity();
+    inactivityTimerRef.current = window.setTimeout(() => {
+      // Stop & send what we have after inactivity
+      stopListening(true);
+    }, HARD_STOP_MS);
+  }
 
   useEffect(() => {
     const SR = getSpeechRecognition();
@@ -44,29 +69,25 @@ export default function AssistantPage() {
     }
 
     const rec = new SR();
-    rec.lang = "en-US"; // change if needed
-    rec.interimResults = true; // we use this to keep updating while speaking
-    rec.continuous = true; // keep session running; we stop on silence via onend
+    rec.lang = "en-US";
+    rec.interimResults = true;
+    rec.continuous = true;
 
     rec.onstart = () => {
       setMicError(null);
       setListening(true);
-      finalTextRef.current = "";
-      // hard stop
-      clearTimeout(inactivityTimerRef.current);
-      inactivityTimerRef.current = setTimeout(() => {
-        stopListening();
-      }, HARD_STOP_MS);
+      armInactivity();
     };
 
     rec.onerror = (e: any) => {
-      setMicError(e?.error || "Mic error");
-      setListening(false);
-      clearTimeout(inactivityTimerRef.current);
+      // Some mobile browsers frequently throw "no-speech" / "aborted"
+      // We'll rely on onend auto-restart while shouldRunRef is true.
+      setMicError(e?.error ? `Mic error: ${e.error}` : null);
     };
 
     rec.onresult = (event: any) => {
-      // build combined transcript (final + interim)
+      armInactivity();
+
       let interim = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const txt = event.results[i][0]?.transcript || "";
@@ -78,65 +99,96 @@ export default function AssistantPage() {
       }
 
       const combined = (finalTextRef.current + interim).trim();
+      latestCombinedRef.current = combined;
       setInput(combined);
-
-      // Reset hard-stop on any speech result (counts as activity)
-      clearTimeout(inactivityTimerRef.current);
-      inactivityTimerRef.current = setTimeout(() => {
-        stopListening();
-      }, HARD_STOP_MS);
     };
 
-    // IMPORTANT:
-    // In Web Speech, it will naturally stop when it detects end of speech / silence.
-    // When it ends, we treat it as "user finished talking".
     rec.onend = () => {
-      const spoken = (finalTextRef.current || "").trim() || input.trim();
-      setListening(false);
-      clearTimeout(inactivityTimerRef.current);
-
-      // If we have text, auto-send it.
-      if (spoken) {
-        setInput(spoken);
-        // auto-send after mic finishes
-        send(spoken);
+      // 🔥 KEY FIX:
+      // Mobile often ends quickly even if user is still speaking.
+      // If user hasn't stopped the mic, we restart automatically.
+      if (shouldRunRef.current) {
+        try {
+          rec.start();
+          return;
+        } catch {
+          // If start() throws (too fast), retry shortly
+          setTimeout(() => {
+            if (!shouldRunRef.current) return;
+            try {
+              rec.start();
+            } catch {}
+          }, 250);
+          return;
+        }
       }
+
+      // If user stopped (or inactivity stopped), finalize
+      setListening(false);
+      clearInactivity();
     };
 
     recognitionRef.current = rec;
 
     return () => {
+      shouldRunRef.current = false;
+      clearInactivity();
       try {
         rec.stop();
       } catch {}
-      clearTimeout(inactivityTimerRef.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function startListening() {
+    if (micError) return;
     const rec = recognitionRef.current;
     if (!rec) return;
+
+    shouldRunRef.current = true;
+    finalTextRef.current = "";
+    latestCombinedRef.current = "";
+    setInput("");
+
     try {
-      finalTextRef.current = "";
       rec.start();
-    } catch (e) {
-      // Chrome throws if start() called twice quickly
+    } catch {
+      // Chrome throws if start() called twice quickly - ignore
     }
   }
 
-  function stopListening() {
+  // stopAndSend = whether we should send on stop (tap stop OR inactivity stop)
+  function stopListening(stopAndSend: boolean) {
     const rec = recognitionRef.current;
     if (!rec) return;
+
+    shouldRunRef.current = false;
+
     try {
       rec.stop();
     } catch {}
+
+    setListening(false);
+    clearInactivity();
+
+    if (stopAndSend) {
+      const spoken = (latestCombinedRef.current || finalTextRef.current || "").trim();
+      if (spoken) {
+        // Ensure UI shows final text, then send
+        setInput(spoken);
+        send(spoken);
+      }
+    }
   }
 
   function toggleMic() {
     if (micError) return;
-    if (listening) stopListening();
-    else startListening();
+    if (shouldRunRef.current) {
+      // user tapped to stop -> stop & send
+      stopListening(true);
+    } else {
+      // user tapped to start
+      startListening();
+    }
   }
 
   async function send(textOverride?: string) {
@@ -190,11 +242,19 @@ export default function AssistantPage() {
       <div style={{ maxWidth: 900, margin: "40px auto", padding: 16 }}>
         <h1 style={{ margin: 0 }}>Assistant</h1>
         <p style={{ marginTop: 6, color: "#5B6475" }}>
-          Tap the mic to speak. It stops when you finish talking (or tap again).
+          Tap the mic to speak. Tap again to stop & send (auto-stops after 3 mins of inactivity).
         </p>
 
         {micError ? (
-          <div style={{ marginTop: 10, padding: 10, border: "1px solid #FCA5A5", borderRadius: 12, background: "#FFF1F2" }}>
+          <div
+            style={{
+              marginTop: 10,
+              padding: 10,
+              border: "1px solid #FCA5A5",
+              borderRadius: 12,
+              background: "#FFF1F2",
+            }}
+          >
             {micError}
           </div>
         ) : null}
@@ -251,7 +311,7 @@ export default function AssistantPage() {
               fontWeight: 900,
             }}
             aria-label="Mic"
-            title={listening ? "Tap to stop" : "Tap to speak"}
+            title={listening ? "Tap to stop & send" : "Tap to speak"}
           >
             {listening ? "■" : "🎤"}
           </button>
